@@ -40,15 +40,12 @@ final class Assets {
 			self::HANDLE,
 			'MinhajGroupsAdmin',
 			array(
-				'ajaxUrl'           => admin_url( 'admin-ajax.php' ),
-				'searchNonce'       => wp_create_nonce( AjaxSearchController::NONCE_ACTION ),
-				'actionUsers'       => AjaxSearchController::ACTION_USERS,
-				'actionGroups'      => AjaxSearchController::ACTION_GROUPS,
-				'reasonPrompt'      => __( 'Reason (required):', 'minhaj-core' ),
-				'reasonRequired'    => __( 'A reason is required.', 'minhaj-core' ),
-				'selectionRequired' => __( 'Please pick an option from the suggestions.', 'minhaj-core' ),
-				'showDetails'       => __( 'Details', 'minhaj-core' ),
-				'hideDetails'       => __( 'Hide details', 'minhaj-core' ),
+				'ajaxUrl'      => admin_url( 'admin-ajax.php' ),
+				'searchNonce'  => wp_create_nonce( AjaxSearchController::NONCE_ACTION ),
+				'actionUsers'  => AjaxSearchController::ACTION_USERS,
+				'actionGroups' => AjaxSearchController::ACTION_GROUPS,
+				'showDetails'  => __( 'Details', 'minhaj-core' ),
+				'hideDetails'  => __( 'Hide details', 'minhaj-core' ),
 			)
 		);
 	}

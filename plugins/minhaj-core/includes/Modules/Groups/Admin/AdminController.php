@@ -498,24 +498,36 @@ final class AdminController {
 									<?php if ( 'active' === $m['status'] ) : ?>
 										<?php
 										$remove_form_id   = 'mj-remove-form-' . (int) $m['id'];
+										$remove_panel     = 'mj-remove-panel-' . (int) $m['id'];
 										$transfer_form_id = 'mj-transfer-form-' . (int) $m['id'];
 										$transfer_panel   = 'mj-transfer-panel-' . (int) $m['id'];
 										$to_hidden_id     = 'mj-to-group-' . (int) $m['id'];
 										?>
 									<div class="row-actions visible">
 										<span class="delete"><a href="#" class="mj-row-remove"
-											data-form="<?php echo esc_attr( $remove_form_id ); ?>"><?php esc_html_e( 'Remove', 'minhaj-core' ); ?></a> | </span>
+											data-panel="<?php echo esc_attr( $remove_panel ); ?>"><?php esc_html_e( 'Remove', 'minhaj-core' ); ?></a> | </span>
 										<span class="edit"><a href="#" class="mj-row-transfer"
 											data-panel="<?php echo esc_attr( $transfer_panel ); ?>"><?php esc_html_e( 'Transfer', 'minhaj-core' ); ?></a></span>
 									</div>
-									<form id="<?php echo esc_attr( $remove_form_id ); ?>" method="post" action="<?php echo esc_url( $post_url ); ?>" style="display:none">
+									<form id="<?php echo esc_attr( $remove_form_id ); ?>" method="post" action="<?php echo esc_url( $post_url ); ?>">
 										<?php wp_nonce_field( self::NONCE_ACTION ); ?>
 										<input type="hidden" name="minhaj_action" value="remove_member"/>
 										<input type="hidden" name="membership_id" value="<?php echo (int) $m['id']; ?>"/>
 										<input type="hidden" name="group_id" value="<?php echo (int) $group['id']; ?>"/>
-										<input type="hidden" name="reason" value=""/>
+										<div id="<?php echo esc_attr( $remove_panel ); ?>" class="mj-remove-panel" style="display:none;padding:4px 0">
+											<label>
+												<?php esc_html_e( 'Reason', 'minhaj-core' ); ?>
+												<input type="text" name="reason" required/>
+											</label>
+											<button type="submit" class="button button-small button-link-delete">
+												<?php esc_html_e( 'Remove', 'minhaj-core' ); ?>
+											</button>
+											<button type="button" class="button button-small mj-row-remove-cancel">
+												<?php esc_html_e( 'Cancel', 'minhaj-core' ); ?>
+											</button>
+										</div>
 									</form>
-									<form id="<?php echo esc_attr( $transfer_form_id ); ?>" method="post" action="<?php echo esc_url( $post_url ); ?>" class="mj-requires-selection">
+									<form id="<?php echo esc_attr( $transfer_form_id ); ?>" method="post" action="<?php echo esc_url( $post_url ); ?>">
 										<?php wp_nonce_field( self::NONCE_ACTION ); ?>
 										<input type="hidden" name="minhaj_action" value="transfer_member"/>
 										<input type="hidden" name="membership_id" value="<?php echo (int) $m['id']; ?>"/>
@@ -550,7 +562,7 @@ final class AdminController {
 			</table>
 
 			<h3><?php esc_html_e( 'Add member', 'minhaj-core' ); ?></h3>
-			<form method="post" action="<?php echo esc_url( $post_url ); ?>" class="mj-requires-selection">
+			<form method="post" action="<?php echo esc_url( $post_url ); ?>">
 				<?php wp_nonce_field( self::NONCE_ACTION ); ?>
 				<input type="hidden" name="minhaj_action" value="add_member"/>
 				<input type="hidden" name="group_id" value="<?php echo (int) $group['id']; ?>"/>
@@ -565,7 +577,7 @@ final class AdminController {
 			</form>
 
 			<h3><?php esc_html_e( 'Assign teacher', 'minhaj-core' ); ?></h3>
-			<form method="post" action="<?php echo esc_url( $post_url ); ?>" class="mj-requires-selection">
+			<form method="post" action="<?php echo esc_url( $post_url ); ?>">
 				<?php wp_nonce_field( self::NONCE_ACTION ); ?>
 				<input type="hidden" name="minhaj_action" value="assign_teacher"/>
 				<input type="hidden" name="group_id" value="<?php echo (int) $group['id']; ?>"/>

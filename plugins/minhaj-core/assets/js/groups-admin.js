@@ -1,10 +1,14 @@
 /*
- * Groups admin — autocomplete + row-actions glue.
+ * Groups admin — autocomplete + row-action panel toggles.
  *
  * Depends on jQuery + jquery-ui-autocomplete, both bundled with core
  * WordPress. All server calls hit admin-ajax.php with a dedicated
  * nonce; the endpoints already re-check the capability, so this file
  * makes no policy decisions of its own — it only wires DOM.
+ *
+ * No browser dialogs (prompt/confirm/alert) — see CLAUDE.md.
+ * Server-side validation is authoritative; the admin sees rejections
+ * as translated WP admin notices after the POST-Redirect-GET.
  */
 ( function ( $ ) {
 	'use strict';
@@ -39,9 +43,9 @@
 						return false;
 					},
 					change: function () {
-						// Manual typing without picking a suggestion is not
-						// enough — clear the hidden id so submit validation
-						// fails cleanly instead of sending 0.
+						// Manual typing without picking a suggestion clears
+						// the hidden id so the server rejects with a proper
+						// admin notice instead of accepting a bogus 0.
 						if ( ! $input.data( 'confirmed' ) ) {
 							$hidden.val( '' );
 						}
@@ -55,10 +59,10 @@
 
 		function bindGroupAutocomplete() {
 			$( '.mj-group-search' ).each( function () {
-				var $input   = $( this );
-				var target   = String( $input.data( 'target' ) || '' );
-				var exclude  = parseInt( $input.data( 'exclude' ) || 0, 10 ) || 0;
-				var $hidden  = target ? $( '#' + target ) : $();
+				var $input  = $( this );
+				var target  = String( $input.data( 'target' ) || '' );
+				var exclude = parseInt( $input.data( 'exclude' ) || 0, 10 ) || 0;
+				var $hidden = target ? $( '#' + target ) : $();
 
 				$input.autocomplete( {
 					source: function ( request, response ) {
@@ -83,62 +87,26 @@
 			} );
 		}
 
-		function bindSubmitGuard() {
-			$( document ).on( 'submit', 'form.mj-requires-selection', function ( event ) {
-				var ok = true;
-				$( this ).find( '.mj-user-search, .mj-group-search' ).each( function () {
-					var target  = String( $( this ).data( 'target' ) || '' );
-					var $hidden = target ? $( '#' + target ) : $();
-					var value   = parseInt( $hidden.val() || 0, 10 ) || 0;
-					if ( value <= 0 ) {
-						ok = false;
-						$( this ).trigger( 'focus' );
-						return false;
-					}
-				} );
-				if ( ! ok ) {
-					event.preventDefault();
-					window.alert( cfg.selectionRequired || 'Please select from the suggestions.' );
-				}
-			} );
+		function togglePanel( panelId ) {
+			var $panel = $( '#' + panelId );
+			if ( ! $panel.length ) { return; }
+			if ( 'none' === $panel.css( 'display' ) ) {
+				$panel.css( 'display', 'block' );
+				$panel.find( 'input[type="text"]' ).first().trigger( 'focus' );
+			} else {
+				$panel.css( 'display', 'none' );
+			}
 		}
 
-		function bindRowRemove() {
-			$( document ).on( 'click', '.mj-row-remove', function ( event ) {
+		function bindRowActions() {
+			$( document ).on( 'click', '.mj-row-remove, .mj-row-transfer', function ( event ) {
 				event.preventDefault();
-				var formId = String( $( this ).data( 'form' ) || '' );
-				if ( ! formId ) { return; }
-				var $form = $( '#' + formId );
-				if ( ! $form.length ) { return; }
-
-				var reason = window.prompt( cfg.reasonPrompt || 'Reason:' );
-				if ( null === reason ) { return; }
-				reason = String( reason ).trim();
-				if ( '' === reason ) {
-					window.alert( cfg.reasonRequired || 'A reason is required.' );
-					return;
-				}
-				$form.find( 'input[name="reason"]' ).val( reason );
-				$form.trigger( 'submit' );
+				togglePanel( String( $( this ).data( 'panel' ) || '' ) );
 			} );
-		}
 
-		function bindRowTransfer() {
-			$( document ).on( 'click', '.mj-row-transfer', function ( event ) {
+			$( document ).on( 'click', '.mj-row-remove-cancel, .mj-row-transfer-cancel', function ( event ) {
 				event.preventDefault();
-				var panelId = String( $( this ).data( 'panel' ) || '' );
-				if ( ! panelId ) { return; }
-				var $panel = $( '#' + panelId );
-				if ( 'none' === $panel.css( 'display' ) ) {
-					$panel.css( 'display', 'block' );
-					$panel.find( '.mj-group-search' ).trigger( 'focus' );
-				} else {
-					$panel.css( 'display', 'none' );
-				}
-			} );
-			$( document ).on( 'click', '.mj-row-transfer-cancel', function ( event ) {
-				event.preventDefault();
-				$( this ).closest( '.mj-transfer-panel' ).css( 'display', 'none' );
+				$( this ).closest( '.mj-remove-panel, .mj-transfer-panel' ).css( 'display', 'none' );
 			} );
 		}
 
@@ -158,9 +126,7 @@
 
 		bindUserAutocomplete();
 		bindGroupAutocomplete();
-		bindSubmitGuard();
-		bindRowRemove();
-		bindRowTransfer();
+		bindRowActions();
 		bindAuditDetails();
 	} );
 } )( jQuery );
