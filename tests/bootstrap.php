@@ -23,6 +23,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 	define( 'ABSPATH', dirname( __DIR__ ) . '/' );
 }
 
+if ( ! class_exists( 'WP_Error' ) ) {
+	require_once __DIR__ . '/support/wp-error-shim.php';
+}
+
 if ( class_exists( \Brain\Monkey::class ) ) {
 	\Brain\Monkey\setUp();
 }

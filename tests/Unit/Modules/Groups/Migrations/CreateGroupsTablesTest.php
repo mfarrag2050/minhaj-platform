@@ -80,6 +80,13 @@ final class CreateGroupsTablesTest extends TestCase {
 		$this->assertStringContainsString( 'payload_json LONGTEXT NULL', $sql );
 	}
 
+	#[TestDox( 'All tables specify ENGINE=InnoDB so transactions and row locks actually apply' )]
+	public function test_all_tables_are_innodb(): void {
+		$this->assertStringContainsString( 'ENGINE=InnoDB', CreateGroupsTables::groups_table_sql( 'wp_', '' ) );
+		$this->assertStringContainsString( 'ENGINE=InnoDB', CreateGroupsTables::members_table_sql( 'wp_', '' ) );
+		$this->assertStringContainsString( 'ENGINE=InnoDB', CreateGroupsTables::audit_table_sql( 'wp_', '' ) );
+	}
+
 	public function test_migration_metadata(): void {
 		$migration = new CreateGroupsTables();
 

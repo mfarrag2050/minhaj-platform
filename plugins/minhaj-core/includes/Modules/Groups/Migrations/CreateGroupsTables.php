@@ -88,7 +88,7 @@ final class CreateGroupsTables extends Migration {
 			KEY teacher_id (teacher_id),
 			KEY batch_id (batch_id),
 			KEY deleted_at (deleted_at)
-		) {$charset};";
+		) ENGINE=InnoDB {$charset};";
 	}
 
 	public static function members_table_sql( string $prefix, string $charset ): string {
@@ -113,7 +113,7 @@ final class CreateGroupsTables extends Migration {
 			KEY group_id (group_id),
 			KEY student_id (student_id),
 			KEY status (status)
-		) {$charset};";
+		) ENGINE=InnoDB {$charset};";
 	}
 
 	public static function audit_table_sql( string $prefix, string $charset ): string {
@@ -131,6 +131,6 @@ final class CreateGroupsTables extends Migration {
 			KEY group_id (group_id),
 			KEY actor_user_id (actor_user_id),
 			KEY created_at (created_at)
-		) {$charset};";
+		) ENGINE=InnoDB {$charset};";
 	}
 }
