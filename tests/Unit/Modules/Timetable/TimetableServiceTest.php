@@ -422,6 +422,7 @@ final class TimetableServiceTest extends TestCase {
 				'sequence_no'         => 5,
 				'lesson_no'           => 5,
 				'status'              => 'scheduled',
+				'anchor_timezone'     => 'Europe/Amsterdam',
 				'scheduled_start_utc' => '2026-09-15 16:00:00',
 				'scheduled_end_utc'   => '2026-09-15 17:00:00',
 			)
@@ -517,20 +518,21 @@ final class TimetableServiceTest extends TestCase {
 		$this->assertSame( 999, $result['id'] );
 	}
 
-	#[TestDox( 'walker cap: 12 weeks of unbroken availability conflicts → makeup_no_slot, rollback, cancellation not applied' )]
-	public function test_cancel_fails_cleanly_when_no_slot_within_twelve_weeks(): void {
+	#[TestDox( 'spec §5.2: 12 weeks of unbroken availability conflicts → cancel STILL succeeds, make-up recorded as unscheduled (NULL times), MAKEUP_UNSCHEDULED event fires' )]
+	public function test_cancel_records_unscheduled_makeup_when_walker_exhausts_cap(): void {
 		$repo       = $this->createMock( TimetableRepository::class );
 		$session_id = 105;
 
 		$repo->method( 'find_session_for_update' )->willReturn(
 			array(
-				'id'          => $session_id,
-				'group_id'    => 1,
-				'pattern_id'  => 99,
-				'teacher_id'  => 50,
-				'sequence_no' => 5,
-				'lesson_no'   => 5,
-				'status'      => 'scheduled',
+				'id'              => $session_id,
+				'group_id'        => 1,
+				'pattern_id'      => 99,
+				'teacher_id'      => 50,
+				'sequence_no'     => 5,
+				'lesson_no'       => 5,
+				'status'          => 'scheduled',
+				'anchor_timezone' => 'Europe/Amsterdam',
 			)
 		);
 		$repo->method( 'find_pattern' )->willReturn(
@@ -546,27 +548,102 @@ final class TimetableServiceTest extends TestCase {
 		$repo->method( 'max_sequence_no_for_group' )->willReturn( 36 );
 		$repo->method( 'max_lesson_no_for_group' )->willReturn( 36 );
 
-		// Every candidate slot faces the same wall: no availability at all.
-		// assert_availability_covers throws on the first evaluation of every
-		// weekday in every week the walker visits — the R-4 branch that
-		// rejects an empty availability list keeps this cheap for the mock.
+		// Walker sees the same wall on every candidate: no availability at all.
 		$repo->method( 'list_availability_for_teacher_on' )->willReturn( array() );
 		$repo->method( 'list_absences_for_teacher_between' )->willReturn( array() );
 		$repo->method( 'lock_teacher_sessions_between' )->willReturn( array() );
 
+		$captured_update = null;
+		$captured_insert = null;
+
+		$repo->expects( $this->once() )
+			->method( 'update_session' )
+			->willReturnCallback(
+				function ( int $id, array $data ) use ( &$captured_update, $session_id ): void {
+					$this->assertSame( $session_id, $id );
+					$captured_update = $data;
+				}
+			);
+		$repo->expects( $this->once() )->method( 'decrement_lesson_no_after_sequence' );
+		$repo->expects( $this->once() )
+			->method( 'insert_session' )
+			->willReturnCallback(
+				function ( array $data ) use ( &$captured_insert ): int {
+					$captured_insert = $data;
+					return 501;
+				}
+			);
+		$repo->expects( $this->once() )->method( 'insert_audit' )->willReturn( 1 );
 		$repo->expects( $this->once() )->method( 'begin_transaction' );
-		$repo->expects( $this->once() )->method( 'rollback' );
-		$repo->expects( $this->never() )->method( 'commit' );
+		$repo->expects( $this->once() )->method( 'commit' );
+		$repo->expects( $this->never() )->method( 'rollback' );
 
-		$repo->expects( $this->never() )->method( 'update_session' );
-		$repo->expects( $this->never() )->method( 'decrement_lesson_no_after_sequence' );
-		$repo->expects( $this->never() )->method( 'insert_session' );
-		$repo->expects( $this->never() )->method( 'insert_audit' );
+		$result = ( new TimetableService( $repo ) )->cancel( 7, $session_id, 'teacher out sick tomorrow' );
 
-		$result = ( new TimetableService( $repo ) )->cancel( 7, $session_id, 'family bereavement' );
+		// The cancel completes — this is the guarantee spec §5.2 formalised.
+		$this->assertIsArray( $result );
 
-		$this->assertInstanceOf( WP_Error::class, $result );
-		$this->assertSame( 'makeup_no_slot', $result->get_error_code() );
+		// Cancelled row: same as the scheduled-slot path (§5.1).
+		$this->assertSame( 'cancelled', $captured_update['status'] );
+		$this->assertNull( $captured_update['lesson_no'] );
+
+		// Make-up numbering stays intact — sequence_no = MAX+1, lesson_no preserved.
+		$this->assertSame( 37, $captured_insert['sequence_no'] );
+		$this->assertSame( 36, $captured_insert['lesson_no'] );
+		$this->assertSame( $session_id, $captured_insert['makeup_for_id'] );
+
+		// The only difference vs. §5.1 happy path: status is unscheduled, times are NULL.
+		$this->assertSame( 'unscheduled', $captured_insert['status'] );
+		$this->assertNull( $captured_insert['scheduled_start_utc'] );
+		$this->assertNull( $captured_insert['scheduled_end_utc'] );
+		$this->assertNull( $captured_insert['local_start_wall'] );
+
+		// anchor_timezone is preserved so schedule_makeup later knows how to project.
+		$this->assertSame( 'Europe/Amsterdam', $captured_insert['anchor_timezone'] );
+	}
+
+	#[TestDox( 'unscheduled fallback: pattern row missing → still cancels + creates unscheduled make-up, no rollback' )]
+	public function test_cancel_falls_back_to_unscheduled_when_pattern_row_missing(): void {
+		$repo       = $this->createMock( TimetableRepository::class );
+		$session_id = 105;
+
+		$repo->method( 'find_session_for_update' )->willReturn(
+			array(
+				'id'              => $session_id,
+				'group_id'        => 1,
+				'pattern_id'      => 99,
+				'teacher_id'      => 50,
+				'sequence_no'     => 5,
+				'lesson_no'       => 5,
+				'status'          => 'scheduled',
+				'anchor_timezone' => 'Europe/Amsterdam',
+			)
+		);
+		// Pattern row lost — must NOT block the cancel.
+		$repo->method( 'find_pattern' )->willReturn( null );
+		$repo->method( 'max_scheduled_start_utc_for_group' )->willReturn( '2026-11-26 17:00:00' );
+		$repo->method( 'max_sequence_no_for_group' )->willReturn( 36 );
+		$repo->method( 'max_lesson_no_for_group' )->willReturn( 36 );
+
+		$captured_insert = null;
+		$repo->expects( $this->once() )->method( 'update_session' );
+		$repo->expects( $this->once() )->method( 'decrement_lesson_no_after_sequence' );
+		$repo->expects( $this->once() )
+			->method( 'insert_session' )
+			->willReturnCallback(
+				function ( array $data ) use ( &$captured_insert ): int {
+					$captured_insert = $data;
+					return 502;
+				}
+			);
+		$repo->expects( $this->once() )->method( 'commit' );
+		$repo->expects( $this->never() )->method( 'rollback' );
+
+		$result = ( new TimetableService( $repo ) )->cancel( 7, $session_id, 'reason' );
+
+		$this->assertIsArray( $result );
+		$this->assertSame( 'unscheduled', $captured_insert['status'] );
+		$this->assertNull( $captured_insert['scheduled_start_utc'] );
 	}
 
 	public function test_cancel_rejects_when_session_not_found(): void {
@@ -607,6 +684,183 @@ final class TimetableServiceTest extends TestCase {
 
 		$this->assertInstanceOf( WP_Error::class, $result );
 		$this->assertSame( 'reason_required', $result->get_error_code() );
+	}
+
+	// ================================================================ schedule_makeup.
+
+	#[TestDox( 'schedule_makeup: happy path — pending unscheduled row flips to scheduled with computed local_wall + end_utc' )]
+	public function test_schedule_makeup_happy_path(): void {
+		$repo       = $this->createMock( TimetableRepository::class );
+		$session_id = 501;
+
+		$repo->method( 'find_session_for_update' )->willReturn(
+			array(
+				'id'                  => $session_id,
+				'group_id'            => 1,
+				'pattern_id'          => 99,
+				'teacher_id'          => 50,
+				'sequence_no'         => 37,
+				'lesson_no'           => 36,
+				'status'              => 'unscheduled',
+				'anchor_timezone'     => 'Europe/Amsterdam',
+				'makeup_for_id'       => 105,
+				'scheduled_start_utc' => null,
+				'scheduled_end_utc'   => null,
+				'local_start_wall'    => null,
+			)
+		);
+		$repo->method( 'find_pattern' )->willReturn(
+			array(
+				'id'               => 99,
+				'anchor_timezone'  => 'Europe/Amsterdam',
+				'weekdays_json'    => '[0,2,4]',
+				'start_local'      => '18:00:00',
+				'duration_minutes' => 60,
+			)
+		);
+		// Sunday 2026-12-06 18:00 Amsterdam CET = 17:00 UTC — teacher free.
+		$repo->method( 'list_availability_for_teacher_on' )->willReturn(
+			array(
+				array(
+					'weekday'        => 0,
+					'start_local'    => '17:00:00',
+					'end_local'      => '20:00:00',
+					'timezone'       => 'Europe/Amsterdam',
+					'effective_from' => '2026-01-01',
+					'effective_to'   => null,
+				),
+			)
+		);
+		$repo->method( 'list_absences_for_teacher_between' )->willReturn( array() );
+		$repo->method( 'lock_teacher_sessions_between' )->willReturn( array() );
+
+		$captured_update = null;
+		$repo->expects( $this->once() )
+			->method( 'update_session' )
+			->willReturnCallback(
+				function ( int $id, array $data ) use ( &$captured_update, $session_id ): void {
+					$this->assertSame( $session_id, $id );
+					$captured_update = $data;
+				}
+			);
+		$repo->expects( $this->once() )->method( 'insert_audit' )->willReturn( 1 );
+		$repo->expects( $this->once() )->method( 'commit' );
+		$repo->expects( $this->never() )->method( 'rollback' );
+
+		$result = ( new TimetableService( $repo ) )->schedule_makeup(
+			7,
+			$session_id,
+			'2026-12-06 17:00:00',
+			'first free Sunday'
+		);
+
+		$this->assertIsArray( $result );
+		$this->assertSame( 'scheduled', $captured_update['status'] );
+		$this->assertSame( '2026-12-06 17:00:00', $captured_update['scheduled_start_utc'] );
+		$this->assertSame( '2026-12-06 18:00:00', $captured_update['scheduled_end_utc'] );
+		$this->assertSame( '2026-12-06 18:00:00', $captured_update['local_start_wall'] );
+	}
+
+	public function test_schedule_makeup_rejects_when_slot_conflicts_availability(): void {
+		$repo       = $this->createMock( TimetableRepository::class );
+		$session_id = 501;
+
+		$repo->method( 'find_session_for_update' )->willReturn(
+			array(
+				'id'              => $session_id,
+				'group_id'        => 1,
+				'pattern_id'      => 99,
+				'teacher_id'      => 50,
+				'sequence_no'     => 37,
+				'lesson_no'       => 36,
+				'status'          => 'unscheduled',
+				'anchor_timezone' => 'Europe/Amsterdam',
+				'makeup_for_id'   => 105,
+			)
+		);
+		$repo->method( 'find_pattern' )->willReturn(
+			array(
+				'id'               => 99,
+				'anchor_timezone'  => 'Europe/Amsterdam',
+				'duration_minutes' => 60,
+				'weekdays_json'    => '[0,2,4]',
+				'start_local'      => '18:00:00',
+			)
+		);
+		// Only Mondays covered — Sunday requested → R-4 rejects.
+		$repo->method( 'list_availability_for_teacher_on' )->willReturn(
+			array( $this->slot( array( 'weekday' => 1 ) ) )
+		);
+		$repo->method( 'list_absences_for_teacher_between' )->willReturn( array() );
+		$repo->method( 'lock_teacher_sessions_between' )->willReturn( array() );
+
+		$repo->expects( $this->never() )->method( 'update_session' );
+		$repo->expects( $this->never() )->method( 'insert_audit' );
+		$repo->expects( $this->once() )->method( 'rollback' );
+
+		$result = ( new TimetableService( $repo ) )->schedule_makeup(
+			7,
+			$session_id,
+			'2026-12-06 17:00:00',
+			'try Sunday'
+		);
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 'schedule_conflict', $result->get_error_code() );
+	}
+
+	public function test_schedule_makeup_rejects_when_session_not_unscheduled(): void {
+		$repo = $this->createMock( TimetableRepository::class );
+
+		$repo->method( 'find_session_for_update' )->willReturn(
+			array(
+				'id'              => 501,
+				'group_id'        => 1,
+				'pattern_id'      => 99,
+				'teacher_id'      => 50,
+				'sequence_no'     => 37,
+				'status'          => 'scheduled',
+				'anchor_timezone' => 'Europe/Amsterdam',
+				'makeup_for_id'   => 105,
+			)
+		);
+		$repo->expects( $this->never() )->method( 'update_session' );
+
+		$result = ( new TimetableService( $repo ) )->schedule_makeup( 7, 501, '2026-12-06 17:00:00', 'reason' );
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 'not_unscheduled', $result->get_error_code() );
+	}
+
+	public function test_schedule_makeup_rejects_when_not_a_makeup(): void {
+		$repo = $this->createMock( TimetableRepository::class );
+
+		$repo->method( 'find_session_for_update' )->willReturn(
+			array(
+				'id'              => 501,
+				'group_id'        => 1,
+				'pattern_id'      => 99,
+				'teacher_id'      => 50,
+				'sequence_no'     => 37,
+				'status'          => 'unscheduled',
+				'anchor_timezone' => 'Europe/Amsterdam',
+				'makeup_for_id'   => null,
+			)
+		);
+		$repo->expects( $this->never() )->method( 'update_session' );
+
+		$result = ( new TimetableService( $repo ) )->schedule_makeup( 7, 501, '2026-12-06 17:00:00', 'reason' );
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 'not_a_makeup', $result->get_error_code() );
+	}
+
+	public function test_schedule_makeup_rejects_malformed_utc(): void {
+		$repo   = $this->createMock( TimetableRepository::class );
+		$result = ( new TimetableService( $repo ) )->schedule_makeup( 7, 501, 'not-a-date', 'reason' );
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 'invalid_arg', $result->get_error_code() );
 	}
 
 	// ---------------------------------------------------------------- helpers.

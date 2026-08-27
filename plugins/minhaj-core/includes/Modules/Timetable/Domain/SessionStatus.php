@@ -22,9 +22,20 @@ final class SessionStatus {
 	public const CANCELLED   = 'cancelled';
 	public const RESCHEDULED = 'rescheduled';
 	public const NO_SHOW     = 'no_show';
+	/**
+	 * A make-up debt with no time yet. Created when TimetableService::cancel
+	 * cannot find a slot within the walker cap — the obligation is still
+	 * recorded so the schedule never silently loses an hour the parent paid
+	 * for. Cleared by TimetableService::schedule_makeup.
+	 */
+	public const UNSCHEDULED = 'unscheduled';
 
 	/**
 	 * Allowed transitions per spec §6. Terminal states have no outgoing edges.
+	 *
+	 * `unscheduled → scheduled` is the manual-scheduling path; nothing else
+	 * turns an unscheduled make-up into a live obligation, so we do not add
+	 * shortcuts here.
 	 *
 	 * @var array<string, array<int, string>>
 	 */
@@ -35,6 +46,7 @@ final class SessionStatus {
 		self::CANCELLED   => array(),
 		self::RESCHEDULED => array(),
 		self::NO_SHOW     => array(),
+		self::UNSCHEDULED => array( self::SCHEDULED ),
 	);
 
 	public static function is_valid( string $status ): bool {

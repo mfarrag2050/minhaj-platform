@@ -345,6 +345,28 @@ class TimetableRepository {
 	}
 
 	/**
+	 * Pending make-ups: rows with status='unscheduled' and a makeup_for_id
+	 * link back to a cancelled session. Feeds the debt-queue CLI.
+	 *
+	 * @return array<int, array<string, mixed>>
+	 */
+	public function list_unscheduled_makeups( int $limit = 500 ): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT id, group_id, sequence_no, lesson_no, teacher_id, makeup_for_id, anchor_timezone, created_at FROM %i WHERE status = 'unscheduled' ORDER BY created_at ASC LIMIT %d",
+				$this->sessions_table(),
+				max( 1, $limit )
+			),
+			ARRAY_A
+		);
+
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
 	 * @return array<string, mixed>|null
 	 */
 	public function find_pattern( int $pattern_id ): ?array {
@@ -376,7 +398,7 @@ class TimetableRepository {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$rows = $wpdb->get_results(
 			$wpdb->prepare(
-				"SELECT id, group_id, scheduled_start_utc, scheduled_end_utc, status FROM %i WHERE teacher_id = %d AND scheduled_start_utc < %s AND scheduled_end_utc > %s AND status <> 'cancelled' FOR UPDATE",
+				"SELECT id, group_id, scheduled_start_utc, scheduled_end_utc, status FROM %i WHERE teacher_id = %d AND scheduled_start_utc IS NOT NULL AND scheduled_start_utc < %s AND scheduled_end_utc > %s AND status NOT IN ('cancelled', 'unscheduled') FOR UPDATE",
 				$this->sessions_table(),
 				$teacher_id,
 				$to_utc,
@@ -460,8 +482,10 @@ class TimetableRepository {
 					INNER JOIN %i b
 						ON a.teacher_id = b.teacher_id
 						AND a.id < b.id
-						AND a.status <> 'cancelled'
-						AND b.status <> 'cancelled'
+						AND a.status NOT IN ('cancelled', 'unscheduled')
+						AND b.status NOT IN ('cancelled', 'unscheduled')
+						AND a.scheduled_start_utc IS NOT NULL
+						AND b.scheduled_start_utc IS NOT NULL
 						AND a.scheduled_start_utc < b.scheduled_end_utc
 						AND a.scheduled_end_utc > b.scheduled_start_utc
 					ORDER BY a.teacher_id ASC, a.scheduled_start_utc ASC",
