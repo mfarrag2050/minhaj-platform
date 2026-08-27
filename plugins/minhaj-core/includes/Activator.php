@@ -11,6 +11,7 @@ namespace Minhaj;
 
 use Minhaj\Migrations\Migrator;
 use Minhaj\Modules\Groups\Roles;
+use Minhaj\Modules\People\Roles as PeopleRoles;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -29,6 +30,7 @@ final class Activator {
 		self::grant_admin_capabilities();
 
 		Roles::install();
+		PeopleRoles::install();
 	}
 
 	private static function grant_admin_capabilities(): void {

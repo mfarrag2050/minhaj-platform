@@ -390,6 +390,51 @@ final class GroupServiceTest extends TestCase {
 		$this->assertSame( 'member_not_active', $result->get_error_code() );
 	}
 
+	// =========================================================== assign_teacher.
+
+	#[TestDox( 'S-4 gate wired: an early filter returning WP_Error blocks assign_teacher before any DB write' )]
+	public function test_assign_teacher_respects_assignability_filter(): void {
+		$repo = $this->createMock( GroupRepository::class );
+
+		// Redefine apply_filters — this test needs the People-side veto to
+		// come through as a WP_Error, not the pass-through default.
+		Monkey\Functions\when( 'apply_filters' )->alias(
+			function ( string $tag, mixed $value ) {
+				if ( 'minhaj_group_can_assign_teacher' === $tag ) {
+					return new WP_Error( 'no_valid_check', 'blocked by test' );
+				}
+				return $value;
+			}
+		);
+
+		$repo->expects( $this->never() )->method( 'begin_transaction' );
+		$repo->expects( $this->never() )->method( 'update_group' );
+		$repo->expects( $this->never() )->method( 'insert_audit' );
+
+		$result = ( new GroupService( $repo ) )->assign_teacher( 7, 1, 50, 'greenlight' );
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 'no_valid_check', $result->get_error_code() );
+	}
+
+	public function test_assign_teacher_proceeds_when_filter_allows(): void {
+		$repo = $this->createMock( GroupRepository::class );
+
+		Monkey\Functions\when( 'apply_filters' )->alias(
+			fn( string $tag, mixed $value ) => $value
+		);
+
+		$repo->method( 'find_group_for_update' )->willReturn( $this->group_row() );
+		$repo->expects( $this->once() )->method( 'begin_transaction' );
+		$repo->expects( $this->once() )->method( 'update_group' );
+		$repo->expects( $this->once() )->method( 'insert_audit' )->willReturn( 1 );
+		$repo->expects( $this->once() )->method( 'commit' );
+
+		$result = ( new GroupService( $repo ) )->assign_teacher( 7, 1, 50, 'greenlight' );
+
+		$this->assertTrue( $result );
+	}
+
 	// ============================================================= helpers.
 
 	/**

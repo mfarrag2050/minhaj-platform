@@ -675,6 +675,30 @@ final class GroupService {
 			return new WP_Error( 'reason_required', __( 'A reason is required.', 'minhaj-core' ) );
 		}
 
+		/**
+		 * Filter · assignability gate for the teacher. spec-people-v1 S-4
+		 * hooks in here to reject teachers without a valid safeguarding
+		 * check, a declared teaching language, or `active` status. We use
+		 * a filter rather than a hard cross-module call so Groups stays
+		 * loadable without People (tests + phased rollouts).
+		 *
+		 * Subscribers return `true` to allow, `WP_Error` to block, or a
+		 * non-error falsy value which is treated as a generic rejection.
+		 *
+		 * @param true|WP_Error $verdict    Current verdict.
+		 * @param int           $teacher_id Candidate teacher id.
+		 * @param int           $group_id   Target group id.
+		 */
+		$verdict = apply_filters( 'minhaj_group_can_assign_teacher', true, $teacher_id, $group_id );
+
+		if ( is_wp_error( $verdict ) ) {
+			return $verdict;
+		}
+
+		if ( true !== $verdict ) {
+			return new WP_Error( 'rejected', __( 'Teacher assignment vetoed by extension.', 'minhaj-core' ) );
+		}
+
 		$previous_teacher_id = 0;
 
 		$this->repo->begin_transaction();

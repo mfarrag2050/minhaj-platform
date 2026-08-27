@@ -11,6 +11,7 @@ namespace Minhaj;
 
 use Minhaj\Migrations\Migrator;
 use Minhaj\Modules\Groups\Module as GroupsModule;
+use Minhaj\Modules\People\Module as PeopleModule;
 use Minhaj\Modules\Timetable\Module as TimetableModule;
 
 defined( 'ABSPATH' ) || exit;
@@ -60,6 +61,7 @@ final class Plugin {
 		$this->modules_registered = true;
 
 		GroupsModule::register();
+		PeopleModule::register();
 		TimetableModule::register();
 	}
 
