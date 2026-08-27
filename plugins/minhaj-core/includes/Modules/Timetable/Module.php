@@ -1,0 +1,55 @@
+<?php
+/**
+ * Timetable module bootstrap.
+ *
+ * Registers the schema migration and, when running under wp-cli, the
+ * `wp minhaj timetable overlap-check` guard (spec §7 R-5 caveat).
+ *
+ * Admin UI, REST controllers, and the remaining §8 service methods (cancel,
+ * reschedule, regenerate_future, teacher_load) come in a follow-up pass.
+ *
+ * @package Minhaj\Modules\Timetable
+ */
+
+declare( strict_types=1 );
+
+namespace Minhaj\Modules\Timetable;
+
+use Minhaj\Modules\Timetable\Cli\OverlapCheckCommand;
+use Minhaj\Modules\Timetable\Migrations\CreateTimetableTables;
+use Minhaj\Modules\Timetable\Repository\TimetableRepository;
+use WP_CLI;
+
+defined( 'ABSPATH' ) || exit;
+
+final class Module {
+
+	private static bool $registered = false;
+
+	public static function register(): void {
+		if ( self::$registered ) {
+			return;
+		}
+
+		self::$registered = true;
+
+		add_filter( 'minhaj_core_register_migrations', array( self::class, 'contribute_migrations' ) );
+
+		if ( defined( 'WP_CLI' ) && WP_CLI ) {
+			WP_CLI::add_command(
+				'minhaj timetable overlap-check',
+				new OverlapCheckCommand( new TimetableRepository() )
+			);
+		}
+	}
+
+	/**
+	 * @param array<int, \Minhaj\Migrations\Migration> $migrations
+	 * @return array<int, \Minhaj\Migrations\Migration>
+	 */
+	public static function contribute_migrations( array $migrations ): array {
+		$migrations[] = new CreateTimetableTables();
+
+		return $migrations;
+	}
+}
