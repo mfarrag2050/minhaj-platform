@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <ruleset name="Minhaj Core">
-	<description>Coding standards for the Minhaj Core plugin.</description>
+	<description>Coding standards for the Minhaj Core plugin. Security sniffs run at error severity — see CLAUDE.md § "Security — non-negotiable".</description>
 
 	<file>plugins/minhaj-core</file>
 
@@ -15,20 +15,64 @@
 	<config name="testVersion" value="8.2-"/>
 	<config name="minimum_supported_wp_version" value="6.4"/>
 
-	<rule ref="WordPress">
+	<!-- Baseline: WordPress-Extra (superset of WordPress) picks up more strictness by default. -->
+	<rule ref="WordPress-Extra">
 		<exclude name="WordPress.Files.FileName.InvalidClassFileName"/>
 		<exclude name="WordPress.Files.FileName.NotHyphenatedLowercase"/>
 	</rule>
 
+	<!--
+		Security sniffs are promoted from warning to error. These match the
+		non-negotiable rules in CLAUDE.md — the CI must fail, not just warn.
+	-->
+	<rule ref="WordPress.Security.NonceVerification">
+		<type>error</type>
+		<severity>10</severity>
+	</rule>
+	<rule ref="WordPress.Security.EscapeOutput">
+		<type>error</type>
+		<severity>10</severity>
+	</rule>
+	<rule ref="WordPress.Security.ValidatedSanitizedInput">
+		<type>error</type>
+		<severity>10</severity>
+	</rule>
+	<rule ref="WordPress.Security.SafeRedirect">
+		<type>error</type>
+		<severity>10</severity>
+	</rule>
+	<rule ref="WordPress.Security.PluginMenuSlug">
+		<type>error</type>
+		<severity>10</severity>
+	</rule>
+	<rule ref="WordPress.DB.PreparedSQL">
+		<type>error</type>
+		<severity>10</severity>
+	</rule>
+	<rule ref="WordPress.DB.PreparedSQLPlaceholders">
+		<type>error</type>
+		<severity>10</severity>
+	</rule>
+	<rule ref="WordPress.DB.DirectDatabaseQuery.SchemaChange">
+		<type>error</type>
+		<severity>10</severity>
+	</rule>
+
 	<rule ref="WordPress.WP.I18n">
 		<properties>
-			<property name="text_domain" type="array" value="minhaj-core"/>
+			<property name="text_domain" type="array">
+				<element value="minhaj-core"/>
+			</property>
 		</properties>
 	</rule>
 
 	<rule ref="WordPress.NamingConventions.PrefixAllGlobals">
 		<properties>
-			<property name="prefixes" type="array" value="Minhaj,minhaj_,MINHAJ_"/>
+			<property name="prefixes" type="array">
+				<element value="Minhaj"/>
+				<element value="minhaj_"/>
+				<element value="MINHAJ_"/>
+			</property>
 		</properties>
 	</rule>
 
