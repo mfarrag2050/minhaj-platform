@@ -37,6 +37,11 @@ final class Module {
 
 		add_filter( 'minhaj_core_register_migrations', array( self::class, 'contribute_migrations' ) );
 
+		// Derived-dates listener: single source for expected_end_date +
+		// has_unscheduled_makeup on the groups table. Wired unconditionally
+		// so the values stay current in admin, cron, CLI, and REST alike.
+		( new SessionDerivedDatesListener( new TimetableRepository() ) )->register();
+
 		if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			$repo = new TimetableRepository();
 			WP_CLI::add_command( 'minhaj timetable overlap-check', new OverlapCheckCommand( $repo ) );

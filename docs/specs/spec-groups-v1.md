@@ -63,9 +63,14 @@
 | `total_sessions` | SMALLINT | **مجمَّد** — مشتقّ من ساعات البرنامج ÷ المدّة |
 | `sessions_per_week` | TINYINT | افتراض 3 |
 | `program_hours` | SMALLINT | 36 |
-| `planned_start_date` / `actual_start_date` / `expected_end_date` | DATE | |
+| `planned_start_date` | DATE | **مُدخَل إداريّ** قبل التوليد — الوعد المقصود لوليّ الأمر. |
+| `actual_start_date` | DATE | **يُختم آليّاً** عند انتقال أوّل جلسة إلى `completed`. لا يُعدَّل يدويّاً. |
+| `expected_end_date` | DATE NULL | **مشتقّ** من `DATE(MAX(scheduled_start_utc))` لجلسات المجموعة **غير الملغاة وغير المعلّقة** (§5 من spec-timetable-v1). يعاد حسابه عند كلّ تغيير في الجدول. لا جلسات مجدولة بعد ⇒ `NULL` — الاشتقاق لا يُخمِّن. |
+| `has_unscheduled_makeup` | TINYINT UNSIGNED | **مشتقّ** — 1 حين تحمل المجموعة تعويضاً معلّقاً واحداً على الأقلّ (§5.2 من spec-timetable-v1)؛ 0 خلاف ذلك. مربوط بـ`expected_end_date` حتى لا يُعرض تاريخ نهاية يبدو نهائياً وهو ليس كذلك. |
 | `formation_deadline` | DATE | آخر موعد لاكتمال الحدّ الأدنى — انظر R-6 |
 | `created_at` / `updated_at` / `deleted_at` | DATETIME | **حذف ناعم فقط** |
+
+> **قاعدة اشتقاق التواريخ (2026-08-28)**: **الجلسات مصدر الحقيقة.** `expected_end_date` و`has_unscheduled_makeup` يكتبهما مستمع واحد في وحدة Timetable (`SessionDerivedDatesListener`) على أحداث `minhaj_sessions_generated` · `minhaj_session_cancelled` · `minhaj_session_rescheduled` · `minhaj_makeup_unscheduled` · `minhaj_makeup_scheduled` · `minhaj_session_completed`. لا تُحسب هذه الحقول في طبقة العرض ولا تُخمَّن — رقم واحد يراه الجميع. `planned_start_date` مُدخَل إداريّ يحدَّد قبل التوليد، و`actual_start_date` يُختم عند أوّل جلسة تُتمّم فعلاً.
 
 ### 3.2 `minhaj_group_members`
 

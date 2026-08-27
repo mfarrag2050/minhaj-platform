@@ -46,6 +46,7 @@ final class GroupsListTable extends WP_List_Table {
 			'teacher_id'        => esc_html__( 'Teacher', 'minhaj-core' ),
 			'teaching_language' => esc_html__( 'Language', 'minhaj-core' ),
 			'seats'             => esc_html__( 'Seats', 'minhaj-core' ),
+			'expected_end_date' => esc_html__( 'Expected end', 'minhaj-core' ),
 			'actions'           => esc_html__( 'Actions', 'minhaj-core' ),
 		);
 	}
@@ -168,6 +169,30 @@ final class GroupsListTable extends WP_List_Table {
 		$batch_id = (int) ( $item['batch_id'] ?? 0 );
 
 		return $batch_id > 0 ? '#' . esc_html( (string) $batch_id ) : '—';
+	}
+
+	/**
+	 * @param array<string, mixed> $item
+	 */
+	public function column_expected_end_date( $item ): string {
+		$date = isset( $item['expected_end_date'] ) ? (string) $item['expected_end_date'] : '';
+		if ( '' === $date ) {
+			return '—';
+		}
+
+		$out = esc_html( $date );
+
+		// spec-groups-v1 §3.1: the badge is what stops admin from mistaking a
+		// still-shifting date for a committed one — always render both together.
+		if ( ! empty( $item['has_unscheduled_makeup'] ) ) {
+			$out .= ' <span class="mj-badge-warning" title="'
+				. esc_attr__( 'A pending make-up has no time yet — the expected end date may shift once it is scheduled.', 'minhaj-core' )
+				. '">⚠ '
+				. esc_html__( 'pending', 'minhaj-core' )
+				. '</span>';
+		}
+
+		return $out;
 	}
 
 	public function no_items(): void {

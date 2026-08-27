@@ -345,6 +345,80 @@ class TimetableRepository {
 	}
 
 	/**
+	 * DATE part of MAX(scheduled_start_utc) across sessions that still count
+	 * toward the group's committed hours — excludes `cancelled` (never happens)
+	 * and `unscheduled` (no time yet). Feeds the derived expected_end_date
+	 * per spec-groups-v1 §3.1.
+	 *
+	 * Returns null when the group has no dated sessions yet — the derivation
+	 * refuses to guess.
+	 */
+	public function max_active_scheduled_date_for_group( int $group_id ): ?string {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$value = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT DATE(MAX(scheduled_start_utc)) FROM %i WHERE group_id = %d AND scheduled_start_utc IS NOT NULL AND status NOT IN ('cancelled', 'unscheduled')",
+				$this->sessions_table(),
+				$group_id
+			)
+		);
+
+		return null === $value ? null : (string) $value;
+	}
+
+	public function count_unscheduled_makeups_for_group( int $group_id ): int {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$value = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM %i WHERE group_id = %d AND status = 'unscheduled'",
+				$this->sessions_table(),
+				$group_id
+			)
+		);
+
+		return null === $value ? 0 : (int) $value;
+	}
+
+	/**
+	 * Narrow cross-module write: the derived-dates listener owns two columns
+	 * on the groups table (expected_end_date + has_unscheduled_makeup). It
+	 * is scoped to those two columns intentionally — the Groups module still
+	 * owns every other write to its table.
+	 *
+	 * @throws PersistenceException On write failure.
+	 */
+	public function update_group_derived_dates(
+		int $group_id,
+		?string $expected_end_date,
+		int $has_unscheduled_makeup
+	): void {
+		global $wpdb;
+
+		$data = array(
+			'expected_end_date'      => $expected_end_date,
+			'has_unscheduled_makeup' => $has_unscheduled_makeup > 0 ? 1 : 0,
+		);
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$result = $wpdb->update(
+			$wpdb->prefix . 'minhaj_groups',
+			$data,
+			array( 'id' => $group_id )
+		);
+
+		if ( false === $result ) {
+			throw new PersistenceException(
+				PersistenceException::WRITE_FAILED,
+				'failed to update group derived dates: ' . $wpdb->last_error
+			);
+		}
+	}
+
+	/**
 	 * Pending make-ups: rows with status='unscheduled' and a makeup_for_id
 	 * link back to a cancelled session. Feeds the debt-queue CLI.
 	 *

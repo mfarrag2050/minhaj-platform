@@ -458,8 +458,21 @@ final class AdminController {
 					<tr><th><?php esc_html_e( 'Language', 'minhaj-core' ); ?></th><td><?php echo esc_html( strtoupper( (string) $group['teaching_language'] ) ); ?></td></tr>
 					<tr><th><?php esc_html_e( 'Batch', 'minhaj-core' ); ?></th><td><?php echo $group['batch_id'] ? '#' . (int) $group['batch_id'] : '—'; ?></td></tr>
 					<tr>
-						<th><?php esc_html_e( 'Schedule pattern', 'minhaj-core' ); ?></th>
-						<td><em><?php esc_html_e( '(Timetable module not installed yet — schedule pattern will appear here.)', 'minhaj-core' ); ?></em></td>
+						<th><?php esc_html_e( 'Planned start', 'minhaj-core' ); ?></th>
+						<td><?php echo esc_html( $group['planned_start_date'] ? (string) $group['planned_start_date'] : '—' ); ?></td>
+					</tr>
+					<tr>
+						<th><?php esc_html_e( 'Actual start', 'minhaj-core' ); ?></th>
+						<td><?php echo esc_html( $group['actual_start_date'] ? (string) $group['actual_start_date'] : '—' ); ?></td>
+					</tr>
+					<tr>
+						<th><?php esc_html_e( 'Expected end', 'minhaj-core' ); ?></th>
+						<td>
+							<?php echo esc_html( $group['expected_end_date'] ? (string) $group['expected_end_date'] : '—' ); ?>
+							<?php if ( ! empty( $group['has_unscheduled_makeup'] ) ) : ?>
+								&nbsp;<span class="mj-badge-warning" title="<?php esc_attr_e( 'A pending make-up has no time yet — the expected end date may shift once it is scheduled.', 'minhaj-core' ); ?>">⚠ <?php esc_html_e( 'pending make-up', 'minhaj-core' ); ?></span>
+							<?php endif; ?>
+						</td>
 					</tr>
 				</tbody>
 			</table>

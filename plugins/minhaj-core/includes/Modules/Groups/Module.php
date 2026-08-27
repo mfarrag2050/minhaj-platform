@@ -12,6 +12,7 @@ namespace Minhaj\Modules\Groups;
 use Minhaj\Modules\Groups\Admin\AdminController;
 use Minhaj\Modules\Groups\Admin\AjaxSearchController;
 use Minhaj\Modules\Groups\Admin\Assets;
+use Minhaj\Modules\Groups\Migrations\AddDerivedFieldsToGroups;
 use Minhaj\Modules\Groups\Migrations\CreateGroupsTables;
 use Minhaj\Modules\Groups\Repository\GroupRepository;
 
@@ -45,6 +46,7 @@ final class Module {
 	 */
 	public static function contribute_migrations( array $migrations ): array {
 		$migrations[] = new CreateGroupsTables();
+		$migrations[] = new AddDerivedFieldsToGroups();
 
 		return $migrations;
 	}
