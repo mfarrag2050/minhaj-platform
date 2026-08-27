@@ -10,6 +10,8 @@ declare( strict_types=1 );
 namespace Minhaj\Modules\Groups;
 
 use Minhaj\Modules\Groups\Admin\AdminController;
+use Minhaj\Modules\Groups\Admin\AjaxSearchController;
+use Minhaj\Modules\Groups\Admin\Assets;
 use Minhaj\Modules\Groups\Migrations\CreateGroupsTables;
 use Minhaj\Modules\Groups\Repository\GroupRepository;
 
@@ -32,6 +34,8 @@ final class Module {
 			$repo    = new GroupRepository();
 			$service = new GroupService( $repo );
 			( new AdminController( $service, $repo ) )->register();
+			( new Assets() )->register();
+			( new AjaxSearchController( $repo ) )->register();
 		}
 	}
 

@@ -36,14 +36,14 @@ STUDENTS=()
 for slot in 1 2 3 4 5 6; do
   login="student_${STAMP}_${slot}"
   email="${login}@example.test"
-  UID_OUT=$(wpc user create "$login" "$email" --role=subscriber --user_pass=x --porcelain 2>/dev/null | tr -d '\r' | tail -1)
+  UID_OUT=$(wpc user create "$login" "$email" --role=minhaj_student --user_pass=x --porcelain 2>/dev/null | tr -d '\r' | tail -1)
   if [[ -z "$UID_OUT" || ! "$UID_OUT" =~ ^[0-9]+$ ]]; then
     echo "${RED}✗ failed to create student '$login'${RESET}"
     exit 1
   fi
   STUDENTS+=( "$UID_OUT" )
 done
-echo "  subscriber ids: ${STUDENTS[*]}"
+echo "  student ids: ${STUDENTS[*]}"
 
 # --------------------------------------------------------------- login ------
 

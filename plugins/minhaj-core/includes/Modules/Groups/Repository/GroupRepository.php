@@ -460,6 +460,42 @@ class GroupRepository {
 		return array( implode( ' AND ', $where_parts ), $args );
 	}
 
+	/**
+	 * @return array<int, array{id:int, code:string, status:string}>
+	 */
+	public function search_groups_by_code( string $query, int $exclude_id = 0, int $limit = 15 ): array {
+		global $wpdb;
+
+		$like = '%' . $wpdb->esc_like( $query ) . '%';
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT id, code, status FROM %i WHERE code LIKE %s AND id <> %d AND deleted_at IS NULL ORDER BY id DESC LIMIT %d',
+				$this->groups_table(),
+				$like,
+				$exclude_id,
+				max( 1, $limit )
+			),
+			ARRAY_A
+		);
+
+		if ( ! is_array( $rows ) ) {
+			return array();
+		}
+
+		return array_map(
+			static function ( array $r ): array {
+				return array(
+					'id'     => (int) $r['id'],
+					'code'   => (string) $r['code'],
+					'status' => (string) $r['status'],
+				);
+			},
+			$rows
+		);
+	}
+
 	// ------------------------------------------------------------------ Audit.
 
 	/**

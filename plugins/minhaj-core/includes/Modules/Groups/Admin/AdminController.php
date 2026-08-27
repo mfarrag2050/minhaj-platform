@@ -310,6 +310,7 @@ final class AdminController {
 			<hr class="wp-header-end"/>
 			<form method="get">
 				<input type="hidden" name="page" value="<?php echo esc_attr( self::MENU_SLUG ); ?>"/>
+				<?php $table->search_box( __( 'Search codes', 'minhaj-core' ), 'minhaj-groups-search' ); ?>
 				<?php $table->display(); ?>
 			</form>
 		</div>
@@ -495,35 +496,51 @@ final class AdminController {
 								<td><?php echo esc_html( (string) ( $m['left_at'] ?? '' ) ); ?></td>
 								<td>
 									<?php if ( 'active' === $m['status'] ) : ?>
-										<form method="post" action="<?php echo esc_url( $post_url ); ?>" style="display:block;margin-bottom:4px"
-											onsubmit="return confirm('<?php echo esc_js( __( 'Remove this member?', 'minhaj-core' ) ); ?>');">
-											<?php wp_nonce_field( self::NONCE_ACTION ); ?>
-											<input type="hidden" name="minhaj_action" value="remove_member"/>
-											<input type="hidden" name="membership_id" value="<?php echo (int) $m['id']; ?>"/>
-											<input type="hidden" name="group_id" value="<?php echo (int) $group['id']; ?>"/>
-											<input type="text" name="reason" required
-												placeholder="<?php echo esc_attr__( 'Reason (required)', 'minhaj-core' ); ?>"
-												style="width:180px"/>
-											<button type="submit" class="button button-small button-link-delete">
-												<?php esc_html_e( 'Remove', 'minhaj-core' ); ?>
-											</button>
-										</form>
-										<form method="post" action="<?php echo esc_url( $post_url ); ?>" style="display:block"
-											onsubmit="return confirm('<?php echo esc_js( __( 'Transfer this member to the target group?', 'minhaj-core' ) ); ?>');">
-											<?php wp_nonce_field( self::NONCE_ACTION ); ?>
-											<input type="hidden" name="minhaj_action" value="transfer_member"/>
-											<input type="hidden" name="membership_id" value="<?php echo (int) $m['id']; ?>"/>
-											<input type="hidden" name="group_id" value="<?php echo (int) $group['id']; ?>"/>
-											<input type="number" name="to_group_id" min="1" required
-												placeholder="<?php echo esc_attr__( 'To group ID', 'minhaj-core' ); ?>"
-												style="width:110px"/>
-											<input type="text" name="reason" required
-												placeholder="<?php echo esc_attr__( 'Reason (required)', 'minhaj-core' ); ?>"
-												style="width:160px"/>
-											<button type="submit" class="button button-small">
+										<?php
+										$remove_form_id   = 'mj-remove-form-' . (int) $m['id'];
+										$transfer_form_id = 'mj-transfer-form-' . (int) $m['id'];
+										$transfer_panel   = 'mj-transfer-panel-' . (int) $m['id'];
+										$to_hidden_id     = 'mj-to-group-' . (int) $m['id'];
+										?>
+									<div class="row-actions visible">
+										<span class="delete"><a href="#" class="mj-row-remove"
+											data-form="<?php echo esc_attr( $remove_form_id ); ?>"><?php esc_html_e( 'Remove', 'minhaj-core' ); ?></a> | </span>
+										<span class="edit"><a href="#" class="mj-row-transfer"
+											data-panel="<?php echo esc_attr( $transfer_panel ); ?>"><?php esc_html_e( 'Transfer', 'minhaj-core' ); ?></a></span>
+									</div>
+									<form id="<?php echo esc_attr( $remove_form_id ); ?>" method="post" action="<?php echo esc_url( $post_url ); ?>" style="display:none">
+										<?php wp_nonce_field( self::NONCE_ACTION ); ?>
+										<input type="hidden" name="minhaj_action" value="remove_member"/>
+										<input type="hidden" name="membership_id" value="<?php echo (int) $m['id']; ?>"/>
+										<input type="hidden" name="group_id" value="<?php echo (int) $group['id']; ?>"/>
+										<input type="hidden" name="reason" value=""/>
+									</form>
+									<form id="<?php echo esc_attr( $transfer_form_id ); ?>" method="post" action="<?php echo esc_url( $post_url ); ?>" class="mj-requires-selection">
+										<?php wp_nonce_field( self::NONCE_ACTION ); ?>
+										<input type="hidden" name="minhaj_action" value="transfer_member"/>
+										<input type="hidden" name="membership_id" value="<?php echo (int) $m['id']; ?>"/>
+										<input type="hidden" name="group_id" value="<?php echo (int) $group['id']; ?>"/>
+										<input type="hidden" id="<?php echo esc_attr( $to_hidden_id ); ?>" name="to_group_id" value=""/>
+										<div id="<?php echo esc_attr( $transfer_panel ); ?>" class="mj-transfer-panel" style="display:none;padding:4px 0">
+											<label>
+												<?php esc_html_e( 'Target group', 'minhaj-core' ); ?>
+												<input type="text" class="mj-group-search regular-text"
+													data-target="<?php echo esc_attr( $to_hidden_id ); ?>"
+													data-exclude="<?php echo (int) $group['id']; ?>"
+													placeholder="<?php echo esc_attr__( 'Search by code…', 'minhaj-core' ); ?>"/>
+											</label>
+											<label>
+												<?php esc_html_e( 'Reason', 'minhaj-core' ); ?>
+												<input type="text" name="reason" required/>
+											</label>
+											<button type="submit" class="button button-small button-primary">
 												<?php esc_html_e( 'Transfer', 'minhaj-core' ); ?>
 											</button>
-										</form>
+											<button type="button" class="button button-small mj-row-transfer-cancel">
+												<?php esc_html_e( 'Cancel', 'minhaj-core' ); ?>
+											</button>
+										</div>
+									</form>
 									<?php endif; ?>
 								</td>
 							</tr>
@@ -533,25 +550,31 @@ final class AdminController {
 			</table>
 
 			<h3><?php esc_html_e( 'Add member', 'minhaj-core' ); ?></h3>
-			<form method="post" action="<?php echo esc_url( $post_url ); ?>">
+			<form method="post" action="<?php echo esc_url( $post_url ); ?>" class="mj-requires-selection">
 				<?php wp_nonce_field( self::NONCE_ACTION ); ?>
 				<input type="hidden" name="minhaj_action" value="add_member"/>
 				<input type="hidden" name="group_id" value="<?php echo (int) $group['id']; ?>"/>
+				<input type="hidden" id="mj-add-student-id" name="student_id" value=""/>
 				<label>
-					<?php esc_html_e( 'Student user ID', 'minhaj-core' ); ?>
-					<input type="number" name="student_id" min="1" required/>
+					<?php esc_html_e( 'Student', 'minhaj-core' ); ?>
+					<input type="text" class="mj-user-search regular-text"
+						data-role="student" data-target="mj-add-student-id"
+						placeholder="<?php echo esc_attr__( 'Search by name…', 'minhaj-core' ); ?>"/>
 				</label>
 				<?php submit_button( __( 'Add member', 'minhaj-core' ), 'secondary', 'submit', false ); ?>
 			</form>
 
 			<h3><?php esc_html_e( 'Assign teacher', 'minhaj-core' ); ?></h3>
-			<form method="post" action="<?php echo esc_url( $post_url ); ?>">
+			<form method="post" action="<?php echo esc_url( $post_url ); ?>" class="mj-requires-selection">
 				<?php wp_nonce_field( self::NONCE_ACTION ); ?>
 				<input type="hidden" name="minhaj_action" value="assign_teacher"/>
 				<input type="hidden" name="group_id" value="<?php echo (int) $group['id']; ?>"/>
+				<input type="hidden" id="mj-assign-teacher-id" name="teacher_id" value=""/>
 				<label>
-					<?php esc_html_e( 'Teacher user ID', 'minhaj-core' ); ?>
-					<input type="number" name="teacher_id" min="1" required/>
+					<?php esc_html_e( 'Teacher', 'minhaj-core' ); ?>
+					<input type="text" class="mj-user-search regular-text"
+						data-role="teacher" data-target="mj-assign-teacher-id"
+						placeholder="<?php echo esc_attr__( 'Search by name…', 'minhaj-core' ); ?>"/>
 				</label>
 				<label>
 					<?php esc_html_e( 'Reason', 'minhaj-core' ); ?>
@@ -592,35 +615,34 @@ final class AdminController {
 				<thead>
 					<tr>
 						<th><?php esc_html_e( 'When', 'minhaj-core' ); ?></th>
-						<th><?php esc_html_e( 'Actor', 'minhaj-core' ); ?></th>
-						<th><?php esc_html_e( 'Action', 'minhaj-core' ); ?></th>
-						<th><?php esc_html_e( 'Subject', 'minhaj-core' ); ?></th>
-						<th><?php esc_html_e( 'Payload', 'minhaj-core' ); ?></th>
+						<th><?php esc_html_e( 'What happened', 'minhaj-core' ); ?></th>
 					</tr>
 				</thead>
 				<tbody>
 					<?php if ( array() === $audit ) : ?>
-						<tr><td colspan="5"><em><?php esc_html_e( 'No audit entries yet.', 'minhaj-core' ); ?></em></td></tr>
+						<tr><td colspan="2"><em><?php esc_html_e( 'No audit entries yet.', 'minhaj-core' ); ?></em></td></tr>
 					<?php else : ?>
 						<?php foreach ( $audit as $row ) : ?>
-							<?php
-							$actor_id = (int) $row['actor_user_id'];
-							$actor    = get_user_by( 'id', $actor_id );
-							?>
 							<tr>
 								<td><?php echo esc_html( (string) $row['created_at'] ); ?></td>
 								<td>
+									<span class="mj-audit-sentence"><?php echo AuditFormatter::sentence( $row ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- AuditFormatter::sentence() returns HTML-safe, translated text. ?></span>
+									&nbsp;<a href="#" class="mj-audit-details-toggle"><?php esc_html_e( 'Details', 'minhaj-core' ); ?></a>
+									<pre class="mj-audit-payload" style="display:none;white-space:pre-wrap;background:#f6f7f7;padding:6px;margin:6px 0;border:1px solid #dcdcde">
 									<?php
-									if ( $actor ) {
-										echo esc_html( $actor->display_name ) . ' <code>#' . (int) $actor_id . '</code>';
-									} else {
-										echo '#' . (int) $actor_id;
-									}
+									echo esc_html(
+										wp_json_encode(
+											array(
+												'action'  => (string) $row['action'],
+												'subject_id' => (int) ( $row['subject_id'] ?? 0 ),
+												'payload' => json_decode( (string) ( $row['payload_json'] ?? '{}' ), true ),
+											),
+											JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+										)
+									);
 									?>
+									</pre>
 								</td>
-								<td><code><?php echo esc_html( (string) $row['action'] ); ?></code></td>
-								<td><?php echo esc_html( (string) ( $row['subject_id'] ?? '' ) ); ?></td>
-								<td><code style="white-space:pre-wrap"><?php echo esc_html( (string) ( $row['payload_json'] ?? '' ) ); ?></code></td>
 							</tr>
 						<?php endforeach; ?>
 					<?php endif; ?>

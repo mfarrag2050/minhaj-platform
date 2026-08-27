@@ -46,6 +46,27 @@ final class GroupsListTable extends WP_List_Table {
 			'teacher_id'        => esc_html__( 'Teacher', 'minhaj-core' ),
 			'teaching_language' => esc_html__( 'Language', 'minhaj-core' ),
 			'seats'             => esc_html__( 'Seats', 'minhaj-core' ),
+			'actions'           => esc_html__( 'Actions', 'minhaj-core' ),
+		);
+	}
+
+	/**
+	 * @param array<string, mixed> $item
+	 */
+	public function column_actions( $item ): string {
+		$manage_url = add_query_arg(
+			array(
+				'page'     => AdminController::MENU_SLUG,
+				'view'     => 'single',
+				'group_id' => (int) $item['id'],
+			),
+			admin_url( 'admin.php' )
+		);
+
+		return sprintf(
+			'<a href="%s" class="button button-small">%s</a>',
+			esc_url( $manage_url ),
+			esc_html__( 'Manage', 'minhaj-core' )
 		);
 	}
 

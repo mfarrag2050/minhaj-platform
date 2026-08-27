@@ -10,6 +10,7 @@ declare( strict_types=1 );
 namespace Minhaj;
 
 use Minhaj\Migrations\Migrator;
+use Minhaj\Modules\Groups\Roles;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -26,6 +27,8 @@ final class Activator {
 		Migrator::instance()->install();
 
 		self::grant_admin_capabilities();
+
+		Roles::install();
 	}
 
 	private static function grant_admin_capabilities(): void {
