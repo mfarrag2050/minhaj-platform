@@ -276,6 +276,190 @@ class GroupRepository {
 		}
 	}
 
+	// ------------------------------------------------------ Read-only listings.
+
+	/**
+	 * @param array<string, mixed> $filters Accepts: status, batch_id, teacher_id, teaching_language, search.
+	 * @return array<int, array<string, mixed>>
+	 */
+	public function list_groups( array $filters, int $per_page, int $offset ): array {
+		global $wpdb;
+
+		[ $where, $args ] = $this->build_group_filter_clause( $filters );
+
+		$args[] = max( 1, $per_page );
+		$args[] = max( 0, $offset );
+
+		/*
+		 * $where is composed only of hard-coded SQL fragments (see
+		 * build_group_filter_clause) — every dynamic value enters through the
+		 * %s/%d/%i placeholders in $args, so prepare() gets exactly the
+		 * replacements it needs. The sniffs disabled here cannot see across
+		 * the helper's return value.
+		 */
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber
+		$sql  = $wpdb->prepare(
+			'SELECT * FROM %i WHERE ' . $where . ' ORDER BY id DESC LIMIT %d OFFSET %d',
+			$this->groups_table(),
+			...$args
+		);
+		$rows = $wpdb->get_results( $sql, ARRAY_A );
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber
+
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
+	 * @param array<string, mixed> $filters
+	 */
+	public function count_groups( array $filters ): int {
+		global $wpdb;
+
+		[ $where, $args ] = $this->build_group_filter_clause( $filters );
+
+		// See list_groups() — $where holds SQL fragments only; placeholders match $args exactly.
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber
+		$sql   = $wpdb->prepare(
+			'SELECT COUNT(*) FROM %i WHERE ' . $where,
+			$this->groups_table(),
+			...$args
+		);
+		$count = $wpdb->get_var( $sql );
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber
+
+		return (int) $count;
+	}
+
+	/**
+	 * @return array<int, array<string, mixed>>
+	 */
+	public function list_members( int $group_id ): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT * FROM %i WHERE group_id = %d ORDER BY seat_index ASC, id ASC',
+				$this->members_table(),
+				$group_id
+			),
+			ARRAY_A
+		);
+
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
+	 * @return array<int, array<string, mixed>>
+	 */
+	public function list_audit( int $group_id, int $limit = 100 ): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT * FROM %i WHERE group_id = %d ORDER BY id DESC LIMIT %d',
+				$this->audit_table(),
+				$group_id,
+				max( 1, $limit )
+			),
+			ARRAY_A
+		);
+
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
+	 * @return array<int, string>
+	 */
+	public function distinct_teaching_languages(): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_col(
+			$wpdb->prepare(
+				"SELECT DISTINCT teaching_language FROM %i WHERE teaching_language <> '' AND deleted_at IS NULL ORDER BY teaching_language",
+				$this->groups_table()
+			)
+		);
+
+		return array_values( array_filter( array_map( 'strval', (array) $rows ) ) );
+	}
+
+	/**
+	 * @return array<int, int>
+	 */
+	public function distinct_teacher_ids(): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_col(
+			$wpdb->prepare(
+				'SELECT DISTINCT teacher_id FROM %i WHERE teacher_id IS NOT NULL AND deleted_at IS NULL ORDER BY teacher_id',
+				$this->groups_table()
+			)
+		);
+
+		return array_values( array_filter( array_map( 'intval', (array) $rows ) ) );
+	}
+
+	/**
+	 * @return array<int, int>
+	 */
+	public function distinct_batch_ids(): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_col(
+			$wpdb->prepare(
+				'SELECT DISTINCT batch_id FROM %i WHERE batch_id IS NOT NULL AND deleted_at IS NULL ORDER BY batch_id',
+				$this->groups_table()
+			)
+		);
+
+		return array_values( array_filter( array_map( 'intval', (array) $rows ) ) );
+	}
+
+	/**
+	 * @param array<string, mixed> $filters
+	 * @return array{0:string, 1:array<int, mixed>}
+	 */
+	private function build_group_filter_clause( array $filters ): array {
+		global $wpdb;
+
+		$where_parts = array( 'deleted_at IS NULL' );
+		$args        = array();
+
+		if ( isset( $filters['status'] ) && '' !== $filters['status'] ) {
+			$where_parts[] = 'status = %s';
+			$args[]        = (string) $filters['status'];
+		}
+
+		if ( isset( $filters['batch_id'] ) && (int) $filters['batch_id'] > 0 ) {
+			$where_parts[] = 'batch_id = %d';
+			$args[]        = (int) $filters['batch_id'];
+		}
+
+		if ( isset( $filters['teacher_id'] ) && (int) $filters['teacher_id'] > 0 ) {
+			$where_parts[] = 'teacher_id = %d';
+			$args[]        = (int) $filters['teacher_id'];
+		}
+
+		if ( isset( $filters['teaching_language'] ) && '' !== $filters['teaching_language'] ) {
+			$where_parts[] = 'teaching_language = %s';
+			$args[]        = (string) $filters['teaching_language'];
+		}
+
+		if ( isset( $filters['search'] ) && '' !== $filters['search'] ) {
+			$like          = '%' . $wpdb->esc_like( (string) $filters['search'] ) . '%';
+			$where_parts[] = '(code LIKE %s OR level LIKE %s)';
+			$args[]        = $like;
+			$args[]        = $like;
+		}
+
+		return array( implode( ' AND ', $where_parts ), $args );
+	}
+
 	// ------------------------------------------------------------------ Audit.
 
 	/**
