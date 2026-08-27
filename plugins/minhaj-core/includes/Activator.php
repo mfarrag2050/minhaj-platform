@@ -16,6 +16,9 @@ defined( 'ABSPATH' ) || exit;
 final class Activator {
 
 	public static function activate(): void {
+		// Modules must contribute their migrations before the Migrator collects them.
+		Plugin::instance()->register_modules();
+
 		Migrator::instance()->install();
 	}
 }

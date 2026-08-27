@@ -10,6 +10,7 @@ declare( strict_types=1 );
 namespace Minhaj;
 
 use Minhaj\Migrations\Migrator;
+use Minhaj\Modules\Groups\Module as GroupsModule;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -17,7 +18,8 @@ final class Plugin {
 
 	private static ?self $instance = null;
 
-	private bool $booted = false;
+	private bool $booted             = false;
+	private bool $modules_registered = false;
 
 	public static function instance(): self {
 		if ( null === self::$instance ) {
@@ -34,14 +36,29 @@ final class Plugin {
 
 		$this->booted = true;
 
+		$this->register_modules();
+
 		Migrator::instance()->maybe_upgrade();
 
 		/**
 		 * Fires once the Minhaj core plugin has finished booting.
-		 *
-		 * Modules under `includes/modules/` hook in here to register themselves.
 		 */
 		do_action( 'minhaj_core_booted', $this );
+	}
+
+	/**
+	 * Wires each module's hooks in one place so both the runtime boot and the
+	 * activation hook see the same registration state before the Migrator
+	 * resolves the migration list.
+	 */
+	public function register_modules(): void {
+		if ( $this->modules_registered ) {
+			return;
+		}
+
+		$this->modules_registered = true;
+
+		GroupsModule::register();
 	}
 
 	private function __construct() {}

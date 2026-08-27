@@ -19,6 +19,10 @@ if ( ! file_exists( $minhaj_autoload ) ) {
 
 require_once $minhaj_autoload;
 
+if ( ! defined( 'ABSPATH' ) ) {
+	define( 'ABSPATH', dirname( __DIR__ ) . '/' );
+}
+
 if ( class_exists( \Brain\Monkey::class ) ) {
 	\Brain\Monkey\setUp();
 }

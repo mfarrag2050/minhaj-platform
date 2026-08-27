@@ -53,9 +53,16 @@
 		<type>error</type>
 		<severity>10</severity>
 	</rule>
+	<!--
+		SchemaChange must fail everywhere except inside a Migrations/ folder,
+		which is the only place CREATE/ALTER/DROP is legitimate. The rule is
+		NOT softened globally — only scoped away from schema files.
+	-->
 	<rule ref="WordPress.DB.DirectDatabaseQuery.SchemaChange">
 		<type>error</type>
 		<severity>10</severity>
+		<exclude-pattern>*/includes/Migrations/*</exclude-pattern>
+		<exclude-pattern>*/includes/Modules/*/Migrations/*</exclude-pattern>
 	</rule>
 
 	<rule ref="WordPress.WP.I18n">
