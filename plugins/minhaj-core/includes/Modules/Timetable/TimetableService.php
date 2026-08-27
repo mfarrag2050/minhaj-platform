@@ -425,6 +425,291 @@ final class TimetableService {
 		return $created_rows;
 	}
 
+	// ========================================================================= cancel.
+
+	/**
+	 * Cancel a session and append a make-up at the end of the program (spec
+	 * §7 R-9). The cancel and the make-up ship in a single transaction: any
+	 * failure leaves the schedule untouched — we never leave a cancelled slot
+	 * without its replacement.
+	 *
+	 * Numbering follows §5 + §5.1:
+	 *   • The cancelled session keeps its sequence_no and gets lesson_no=NULL.
+	 *   • Every later held session's lesson_no shifts down by one (sequence_no
+	 *     never moves — R-8).
+	 *   • The make-up gets sequence_no = MAX(sequence_no)+1 and lesson_no =
+	 *     MAX(lesson_no)-before-cancel, keeping the promised curriculum count.
+	 *
+	 * The make-up's datetime is chosen by walking the group's pattern forward
+	 * from MAX(scheduled_start_utc) day by day, picking the first weekday
+	 * that matches the pattern and passes assert_availability_covers +
+	 * assert_no_absence + assert_no_double_book. The walker is bounded by
+	 * `minhaj_timetable_makeup_max_weeks` (default 12) so a chronically
+	 * booked teacher fails cleanly instead of scanning years of calendar.
+	 *
+	 * @return array<string, mixed>|WP_Error The inserted make-up session row on success.
+	 */
+	public function cancel( int $actor_user_id, int $session_id, string $reason ) {
+		$actor_check = $this->require_actor( $actor_user_id );
+		if ( is_wp_error( $actor_check ) ) {
+			return $actor_check;
+		}
+
+		if ( $session_id <= 0 ) {
+			return new WP_Error( 'invalid_arg', __( 'session_id is required.', 'minhaj-core' ) );
+		}
+
+		$reason_clean = sanitize_text_field( $reason );
+		if ( '' === trim( $reason_clean ) ) {
+			return new WP_Error( 'reason_required', __( 'A reason for cancellation is required.', 'minhaj-core' ) );
+		}
+
+		/**
+		 * Filter · how many weeks the make-up search may extend past the last
+		 * session before failing. Extend only when a specific market's calendar
+		 * of holidays makes the default 12 too tight — chronically low caps
+		 * mask availability problems.
+		 *
+		 * @param int $max_weeks Default 12.
+		 */
+		$max_weeks = (int) apply_filters( 'minhaj_timetable_makeup_max_weeks', 12 );
+		if ( $max_weeks < 1 ) {
+			$max_weeks = 1;
+		}
+
+		$now            = current_time( 'mysql', true );
+		$makeup_row     = null;
+		$group_id_after = 0;
+		$cancelled_seq  = 0;
+
+		$this->repo->begin_transaction();
+		try {
+			$session = $this->repo->find_session_for_update( $session_id );
+			if ( null === $session ) {
+				$this->repo->rollback();
+				return new WP_Error( 'session_not_found', __( 'Session not found.', 'minhaj-core' ) );
+			}
+
+			$current_status = (string) $session['status'];
+			if ( SessionStatus::CANCELLED === $current_status ) {
+				$this->repo->rollback();
+				return new WP_Error( 'already_cancelled', __( 'Session is already cancelled.', 'minhaj-core' ) );
+			}
+
+			if ( ! SessionStatus::can_transition( $current_status, SessionStatus::CANCELLED ) ) {
+				$this->repo->rollback();
+				return new WP_Error(
+					'invalid_transition',
+					sprintf(
+						/* translators: 1: current session status */
+						__( 'Cannot cancel a session in status %s.', 'minhaj-core' ),
+						$current_status
+					)
+				);
+			}
+
+			$group_id      = (int) $session['group_id'];
+			$pattern_id    = (int) $session['pattern_id'];
+			$teacher_id    = (int) $session['teacher_id'];
+			$cancelled_seq = (int) $session['sequence_no'];
+
+			$pattern = $this->repo->find_pattern( $pattern_id );
+			if ( null === $pattern ) {
+				$this->repo->rollback();
+				return new WP_Error( 'pattern_not_found', __( 'Schedule pattern for the session was not found.', 'minhaj-core' ) );
+			}
+
+			$last_utc = $this->repo->max_scheduled_start_utc_for_group( $group_id );
+			if ( null === $last_utc ) {
+				$this->repo->rollback();
+				return new WP_Error( 'schedule_empty', __( 'No sessions exist for the group.', 'minhaj-core' ) );
+			}
+
+			// Take these snapshots BEFORE cancel/decrement — the makeup's
+			// numbering references the pre-change state (§5.1).
+			$next_seq         = $this->repo->max_sequence_no_for_group( $group_id ) + 1;
+			$makeup_lesson_no = $this->repo->max_lesson_no_for_group( $group_id );
+
+			$slot = $this->find_makeup_slot( $teacher_id, $pattern, $last_utc, $max_weeks );
+			if ( is_wp_error( $slot ) ) {
+				$this->repo->rollback();
+				return $slot;
+			}
+
+			// 1 · The cancelled row keeps its sequence_no; lesson_no clears.
+			$this->repo->update_session(
+				$session_id,
+				array(
+					'status'     => SessionStatus::CANCELLED,
+					'lesson_no'  => null,
+					'updated_at' => $now,
+				)
+			);
+
+			// 2 · Shift lesson_no down for every held session after this seq.
+			$this->repo->decrement_lesson_no_after_sequence( $group_id, $cancelled_seq );
+
+			// 3 · Append the make-up at MAX(sequence_no)+1 — never at
+			// cancelled+1. That is §7 R-8 + R-9 together.
+			$row = array(
+				'group_id'            => $group_id,
+				'pattern_id'          => $pattern_id,
+				'sequence_no'         => $next_seq,
+				'lesson_no'           => $makeup_lesson_no,
+				'scheduled_start_utc' => $slot['scheduled_start_utc'],
+				'scheduled_end_utc'   => $slot['scheduled_end_utc'],
+				'local_start_wall'    => $slot['local_start_wall'],
+				'anchor_timezone'     => (string) $pattern['anchor_timezone'],
+				'teacher_id'          => $teacher_id,
+				'status'              => SessionStatus::SCHEDULED,
+				'makeup_for_id'       => $session_id,
+				'created_at'          => $now,
+				'updated_at'          => $now,
+			);
+
+			$row['id']      = $this->repo->insert_session( $row );
+			$makeup_row     = $row;
+			$group_id_after = $group_id;
+
+			$this->repo->insert_audit(
+				array(
+					'group_id'      => $group_id,
+					'teacher_id'    => $teacher_id,
+					'actor_user_id' => $actor_user_id,
+					'action'        => 'session.cancelled_with_makeup',
+					'subject_id'    => $session_id,
+					'payload_json'  => (string) wp_json_encode(
+						array(
+							'cancelled_session_id'  => $session_id,
+							'cancelled_sequence_no' => $cancelled_seq,
+							'makeup_session_id'     => $row['id'],
+							'makeup_sequence_no'    => $next_seq,
+							'makeup_lesson_no'      => $makeup_lesson_no,
+							'reason'                => $reason_clean,
+						)
+					),
+					'created_at'    => $now,
+				)
+			);
+
+			$this->repo->commit();
+		} catch ( PersistenceException $e ) {
+			$this->repo->rollback();
+			return new WP_Error( 'persistence_error', $e->getMessage(), array( 'kind' => $e->kind() ) );
+		} catch ( Throwable $e ) {
+			$this->repo->rollback();
+			return new WP_Error( 'persistence_error', $e->getMessage() );
+		}
+
+		do_action(
+			Events::SESSION_CANCELLED,
+			$session_id,
+			$group_id_after,
+			(int) ( $makeup_row['id'] ?? 0 ),
+			$cancelled_seq,
+			$reason_clean,
+			$actor_user_id
+		);
+
+		return $makeup_row;
+	}
+
+	/**
+	 * Walk the pattern forward from $last_utc looking for the first slot that
+	 * satisfies availability / absence / double-book. Bounded by $max_weeks so
+	 * a chronically booked teacher fails fast rather than scanning years.
+	 *
+	 * @param array<string, mixed> $pattern Pattern row (weekdays_json + start_local + duration_minutes + anchor_timezone).
+	 *
+	 * @return array{local_start_wall:string, scheduled_start_utc:string, scheduled_end_utc:string}|WP_Error
+	 */
+	private function find_makeup_slot( int $teacher_id, array $pattern, string $last_utc, int $max_weeks ) {
+		try {
+			$anchor_tz = new \DateTimeZone( (string) $pattern['anchor_timezone'] );
+		} catch ( \Exception $e ) {
+			return new WP_Error( 'invalid_pattern', __( 'Pattern anchor_timezone is not a valid IANA identifier.', 'minhaj-core' ) );
+		}
+
+		$weekdays = json_decode( (string) $pattern['weekdays_json'], true );
+		if ( ! is_array( $weekdays ) || array() === $weekdays ) {
+			return new WP_Error( 'invalid_pattern', __( 'Pattern weekdays_json is malformed.', 'minhaj-core' ) );
+		}
+		$weekdays = array_map( 'intval', $weekdays );
+
+		$duration   = (int) $pattern['duration_minutes'];
+		$start_time = (string) $pattern['start_local'];
+		if ( 5 === strlen( $start_time ) ) {
+			$start_time .= ':00';
+		}
+
+		$utc_zone  = new \DateTimeZone( 'UTC' );
+		$last_dt   = new \DateTimeImmutable( $last_utc, $utc_zone );
+		$last_wall = $last_dt->setTimezone( $anchor_tz );
+
+		// Start on the day AFTER the last session's anchor-local date so we
+		// never re-issue a slot that already ran today.
+		$cursor = new \DateTimeImmutable(
+			$last_wall->format( 'Y-m-d' ) . ' ' . $start_time,
+			$anchor_tz
+		);
+		$cursor = $cursor->modify( '+1 day' );
+
+		$last_conflict = __( 'no matching weekday encountered inside the cap.', 'minhaj-core' );
+		$day_cap       = $max_weeks * 7;
+
+		for ( $i = 0; $i < $day_cap; $i++ ) {
+			$dow = (int) $cursor->format( 'w' );
+			if ( ! in_array( $dow, $weekdays, true ) ) {
+				$cursor = $cursor->modify( '+1 day' );
+				continue;
+			}
+
+			$local_wall_str = $cursor->format( 'Y-m-d H:i:s' );
+			$utc_start      = $cursor->setTimezone( $utc_zone )->format( 'Y-m-d H:i:s' );
+			$utc_end        = $cursor->setTimezone( $utc_zone )
+									->modify( '+' . $duration . ' minutes' )
+									->format( 'Y-m-d H:i:s' );
+
+			// Defensive: never accept a candidate that is not strictly after
+			// the last existing session in UTC.
+			if ( $utc_start <= $last_utc ) {
+				$cursor = $cursor->modify( '+1 day' );
+				continue;
+			}
+
+			$date_iso     = $cursor->format( 'Y-m-d' );
+			$availability = $this->repo->list_availability_for_teacher_on( $teacher_id, $date_iso );
+			$absences     = $this->repo->list_absences_for_teacher_between( $teacher_id, $utc_start, $utc_end );
+			$existing     = $this->repo->lock_teacher_sessions_between( $teacher_id, $utc_start, $utc_end );
+
+			try {
+				TimetableRules::assert_availability_covers( $availability, $utc_start, $utc_end );
+				TimetableRules::assert_no_absence( $absences, $utc_start, $utc_end );
+				TimetableRules::assert_no_double_book( $existing, $utc_start, $utc_end );
+
+				return array(
+					'local_start_wall'    => $local_wall_str,
+					'scheduled_start_utc' => $utc_start,
+					'scheduled_end_utc'   => $utc_end,
+				);
+			} catch ( RuleViolationException $e ) {
+				$last_conflict = $e->getMessage();
+			}
+
+			$cursor = $cursor->modify( '+1 day' );
+		}
+
+		return new WP_Error(
+			'makeup_no_slot',
+			sprintf(
+				/* translators: 1: cap in weeks, 2: last conflict message from the walker */
+				__( 'No make-up slot found in the next %1$d weeks — last conflict: %2$s', 'minhaj-core' ),
+				$max_weeks,
+				$last_conflict
+			)
+		);
+	}
+
 	// -------------------------------------------------------------------- Helpers.
 
 	/**

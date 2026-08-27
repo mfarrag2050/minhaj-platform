@@ -211,6 +211,159 @@ class TimetableRepository {
 	// -------------------------------------------------------------------- Sessions.
 
 	/**
+	 * @return array<string, mixed>|null
+	 */
+	public function find_session( int $session_id ): ?array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$row = $wpdb->get_row(
+			$wpdb->prepare(
+				'SELECT * FROM %i WHERE id = %d',
+				$this->sessions_table(),
+				$session_id
+			),
+			ARRAY_A
+		);
+
+		return is_array( $row ) ? $row : null;
+	}
+
+	/**
+	 * FOR UPDATE variant used by cancel(). Locks the row for the length of
+	 * the outer transaction so a concurrent write cannot mutate the session
+	 * between the state check and the update.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public function find_session_for_update( int $session_id ): ?array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$row = $wpdb->get_row(
+			$wpdb->prepare(
+				'SELECT * FROM %i WHERE id = %d FOR UPDATE',
+				$this->sessions_table(),
+				$session_id
+			),
+			ARRAY_A
+		);
+
+		return is_array( $row ) ? $row : null;
+	}
+
+	/**
+	 * @param array<string, mixed> $data
+	 *
+	 * @throws PersistenceException On write failure.
+	 */
+	public function update_session( int $session_id, array $data ): void {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$result = $wpdb->update( $this->sessions_table(), $data, array( 'id' => $session_id ) );
+
+		if ( false === $result ) {
+			throw new PersistenceException(
+				PersistenceException::WRITE_FAILED,
+				'failed to update session: ' . $wpdb->last_error
+			);
+		}
+	}
+
+	/**
+	 * Shift lesson_no down by one for every held session after $after_sequence
+	 * in the group. Cancelled rows keep lesson_no NULL and are skipped by the
+	 * `status <> 'cancelled'` filter.
+	 *
+	 * @throws PersistenceException On write failure.
+	 */
+	public function decrement_lesson_no_after_sequence( int $group_id, int $after_sequence ): void {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$result = $wpdb->query(
+			$wpdb->prepare(
+				"UPDATE %i SET lesson_no = lesson_no - 1 WHERE group_id = %d AND sequence_no > %d AND status <> 'cancelled' AND lesson_no IS NOT NULL",
+				$this->sessions_table(),
+				$group_id,
+				$after_sequence
+			)
+		);
+
+		if ( false === $result ) {
+			throw new PersistenceException(
+				PersistenceException::WRITE_FAILED,
+				'failed to shift lesson_no: ' . $wpdb->last_error
+			);
+		}
+	}
+
+	public function max_sequence_no_for_group( int $group_id ): int {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$value = $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT MAX(sequence_no) FROM %i WHERE group_id = %d',
+				$this->sessions_table(),
+				$group_id
+			)
+		);
+
+		return null === $value ? 0 : (int) $value;
+	}
+
+	public function max_lesson_no_for_group( int $group_id ): int {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$value = $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT MAX(lesson_no) FROM %i WHERE group_id = %d',
+				$this->sessions_table(),
+				$group_id
+			)
+		);
+
+		return null === $value ? 0 : (int) $value;
+	}
+
+	public function max_scheduled_start_utc_for_group( int $group_id ): ?string {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$value = $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT MAX(scheduled_start_utc) FROM %i WHERE group_id = %d',
+				$this->sessions_table(),
+				$group_id
+			)
+		);
+
+		return null === $value ? null : (string) $value;
+	}
+
+	/**
+	 * @return array<string, mixed>|null
+	 */
+	public function find_pattern( int $pattern_id ): ?array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$row = $wpdb->get_row(
+			$wpdb->prepare(
+				'SELECT * FROM %i WHERE id = %d',
+				$this->patterns_table(),
+				$pattern_id
+			),
+			ARRAY_A
+		);
+
+		return is_array( $row ) ? $row : null;
+	}
+
+	/**
 	 * Lock and return every existing session for a teacher whose window
 	 * intersects [$from_utc, $to_utc). Used by generate_for_group to enforce
 	 * §7 R-5 while a batch of new sessions is being inserted.
