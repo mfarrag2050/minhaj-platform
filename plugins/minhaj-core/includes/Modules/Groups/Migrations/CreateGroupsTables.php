@@ -7,12 +7,14 @@
  * columns to keep future changes migration-friendly; the domain classes
  * (GroupType, GroupStatus) hold the authoritative value lists.
  *
- * MySQL/MariaDB do not support partial unique indexes. The two mirror
- * columns `active_seat_index` and `active_student_id` hold the seat/student
- * value only while status='active' and NULL otherwise, letting the plain
- * UNIQUE (group_id, active_seat_index) and (group_id, active_student_id)
- * indexes enforce spec §3.2 without partial-index support. Maintenance of
- * those columns is the service layer's responsibility.
+ * MySQL/MariaDB do not support partial unique indexes. Spec §3.2 is
+ * enforced by two STORED generated columns — `active_seat_index` and
+ * `active_student_id` — computed by the DB from `status`, `seat_index`,
+ * and `student_id`. When status='active' they mirror the source; otherwise
+ * they are NULL, and NULL entries do not collide in a MySQL UNIQUE index.
+ * Because the values are DB-maintained, the service layer cannot forget
+ * to sync them — the constraint is always in effect. Verified against
+ * WordPress core dbDelta on MariaDB 11 LTS.
  *
  * @package Minhaj\Modules\Groups\Migrations
  */
@@ -100,8 +102,8 @@ final class CreateGroupsTables extends Migration {
 			joined_at DATETIME NOT NULL,
 			left_at DATETIME NULL DEFAULT NULL,
 			seat_index TINYINT UNSIGNED NOT NULL,
-			active_seat_index TINYINT UNSIGNED NULL DEFAULT NULL,
-			active_student_id BIGINT UNSIGNED NULL DEFAULT NULL,
+			active_seat_index TINYINT UNSIGNED GENERATED ALWAYS AS (IF(status='active', seat_index, NULL)) STORED,
+			active_student_id BIGINT UNSIGNED GENERATED ALWAYS AS (IF(status='active', student_id, NULL)) STORED,
 			transferred_from_group_id BIGINT UNSIGNED NULL DEFAULT NULL,
 			transferred_to_group_id BIGINT UNSIGNED NULL DEFAULT NULL,
 			order_id BIGINT UNSIGNED NULL DEFAULT NULL,

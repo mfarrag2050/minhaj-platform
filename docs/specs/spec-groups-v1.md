@@ -83,7 +83,16 @@
 
 **فهرس فريد** `(group_id, student_id)` حيث `status='active'` — لا عضويّة مزدوجة.
 
-> **قرار تنفيذ (2026-08-27):** MySQL/MariaDB لا يدعمان الفهارس الجزئيّة (`WHERE status='active'`). البديل المُطبَّق هو **العمودان المرآة** `active_seat_index` و`active_student_id`: يحملان قيمة `seat_index`/`student_id` عندما `status='active'` فقط، وإلا يكونان `NULL`. الفهرسان الفريدان يقعان على `(group_id, active_seat_index)` و`(group_id, active_student_id)`؛ ولأنّ MySQL يسمح بتكرار الـ`NULL` في الفهرس الفريد، الصفوف غير النشطة لا تصطدم. تحديث العمودَين مسؤوليّة طبقة الخدمة (`GroupService`) عند كلّ انتقال حالة عضويّة، بمعاملة واحدة مع `UPDATE`. الاختيار بين هذا الحلّ وجدول مقاعد منفصل يوفّر بساطة نموذج بيانات وقربًا من التعليمة الأصليّة في المواصفة.
+> **قرار تنفيذ (2026-08-27 · محدَّث):** MySQL/MariaDB لا يدعمان الفهارس الجزئيّة (`WHERE status='active'`). البديل المُطبَّق هو **عمودا مرآة مولَّدان (STORED generated columns)** يحسبهما محرّك القاعدة من `status`:
+>
+> ```sql
+> active_seat_index  TINYINT UNSIGNED GENERATED ALWAYS AS (IF(status='active', seat_index,  NULL)) STORED
+> active_student_id  BIGINT  UNSIGNED GENERATED ALWAYS AS (IF(status='active', student_id, NULL)) STORED
+> ```
+>
+> الفهرسان الفريدان `UNIQUE (group_id, active_seat_index)` و`UNIQUE (group_id, active_student_id)` يقعان على هذين العمودَين. لأنّ MySQL يسمح بتكرار الـ`NULL` في الفهرس الفريد، الصفوف غير النشطة لا تصطدم — والصفّ يعود «نشطاً» فور تحوّل `status` إلى `active` بلا سطر واحد في PHP. **طبقة الخدمة لا تلمس هذين العمودَين ولا يمكنها نسيان مزامنتهما.** تُخرَج مسؤوليّة المزامنة من الكود إلى القيد ذاته، وهو ما تطلبه المواصفة صراحةً في §5 R-1: «يُفرَض في القاعدة لا في PHP».
+>
+> جرِّب على WordPress core `dbDelta` مع MariaDB 11 LTS: يقبل الصياغة ويولّد الأعمدة كما هي، والفهارس فوقها، بلا تحوير. `wp-env destroy && wp-env start` ثم `SHOW CREATE TABLE wp_minhaj_group_members` أثبت ذلك.
 
 ### 3.3 `minhaj_group_audit`
 `id` · `group_id` · `actor_user_id` · `action` · `subject_id` · `payload_json` · `created_at`.

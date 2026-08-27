@@ -40,11 +40,27 @@ final class CreateGroupsTablesTest extends TestCase {
 		);
 	}
 
-	public function test_members_table_defines_the_active_mirror_columns_as_nullable(): void {
+	#[TestDox( 'R-1: active mirror columns are STORED generated columns computed from status — service layer cannot forget to sync them' )]
+	public function test_members_table_defines_the_active_mirror_columns_as_generated(): void {
 		$sql = CreateGroupsTables::members_table_sql( 'wp_', '' );
 
-		$this->assertMatchesRegularExpression( '/active_seat_index\s+TINYINT\s+UNSIGNED\s+NULL/i', $sql );
-		$this->assertMatchesRegularExpression( '/active_student_id\s+BIGINT\s+UNSIGNED\s+NULL/i', $sql );
+		$this->assertMatchesRegularExpression(
+			"/active_seat_index\s+TINYINT\s+UNSIGNED\s+GENERATED\s+ALWAYS\s+AS\s*\(\s*IF\s*\(\s*status\s*=\s*'active'\s*,\s*seat_index\s*,\s*NULL\s*\)\s*\)\s+STORED/i",
+			$sql
+		);
+		$this->assertMatchesRegularExpression(
+			"/active_student_id\s+BIGINT\s+UNSIGNED\s+GENERATED\s+ALWAYS\s+AS\s*\(\s*IF\s*\(\s*status\s*=\s*'active'\s*,\s*student_id\s*,\s*NULL\s*\)\s*\)\s+STORED/i",
+			$sql
+		);
+	}
+
+	public function test_members_table_mirror_columns_have_no_default_clause(): void {
+		$sql = CreateGroupsTables::members_table_sql( 'wp_', '' );
+
+		// Generated columns may not carry DEFAULT — MySQL rejects it and would
+		// break the migration silently under dbDelta.
+		$this->assertDoesNotMatchRegularExpression( '/active_seat_index[^,]*DEFAULT/i', $sql );
+		$this->assertDoesNotMatchRegularExpression( '/active_student_id[^,]*DEFAULT/i', $sql );
 	}
 
 	public function test_groups_table_freezes_capacity_columns_and_soft_delete(): void {
