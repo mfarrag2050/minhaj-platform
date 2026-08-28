@@ -339,16 +339,36 @@ final class TimetableService {
 			// the caller's weeks_count is authoritative — extending it
 			// silently would relax the R-1 invariant that catches bad
 			// callers with a pattern that does not match total_sessions.
+			//
+			// Hard cap on the extension: 2× the caller's original weeks.
+			// A calendar with hundreds of accidentally-disabled dates
+			// (bulk-import gone wrong) would otherwise walk past the end
+			// of the following year silently and produce a lesson_no=36
+			// two years late. The right answer is a loud refusal so the
+			// admin fixes the calendar.
+			$original_weeks = (int) ( $pattern_args['weeks_count'] ?? 0 );
+			$max_walk_weeks = max( $original_weeks * 2, $original_weeks + 4 );
+
 			$walk_args = $pattern_args;
 			if (
 				'skip_and_compress' !== $holiday_behavior
 				&& $expected_total > 0
 				&& array() !== $skip_dates
 			) {
-				$walk_args['weeks_count'] = max(
-					(int) $walk_args['weeks_count'],
-					(int) ceil( ( $expected_total + count( $skip_dates ) ) / $sessions_per_week ) + 2
-				);
+				$needed_weeks = (int) ceil( ( $expected_total + count( $skip_dates ) ) / $sessions_per_week ) + 2;
+				if ( $needed_weeks > $max_walk_weeks ) {
+					return new WP_Error(
+						'calendar_over_disabled',
+						sprintf(
+							/* translators: 1: original weeks, 2: computed needed weeks, 3: cap */
+							__( 'skip_and_extend would need %2$d weeks (from %1$d, cap %3$d). Too many disabled dates in the attached calendars — refuse rather than walk into next year.', 'minhaj-core' ),
+							$original_weeks,
+							$needed_weeks,
+							$max_walk_weeks
+						)
+					);
+				}
+				$walk_args['weeks_count'] = max( (int) $walk_args['weeks_count'], $needed_weeks );
 			}
 
 			$sessions = SessionTimeCalculator::generate( $walk_args, $skip_dates );
@@ -530,14 +550,25 @@ final class TimetableService {
 			// do not silently keep the marketing 36. Writing to a Groups
 			// column from Timetable is a scoped exception — the derived-
 			// dates listener already does the same for expected_end_date.
+			//
+			// AND: program_hours has to move with total_sessions. A group
+			// that advertises 36 hours and delivers 32 is a silent lie,
+			// and the compliance gate (spec-compensation-v1 §2) rests on
+			// the "36 hours delivered" claim being true. Recompute here
+			// under the same commit so the two columns are never in
+			// conflict.
 			if ( 'skip_and_compress' === $holiday_behavior && null !== $compressed_total ) {
 				global $wpdb;
+
+				$duration_minutes = (int) ( $group['session_duration_minutes'] ?? 60 );
+				$recomputed_hours = (int) round( ( $compressed_total * $duration_minutes ) / 60 );
 
 				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 				$wpdb->update(
 					$wpdb->prefix . 'minhaj_groups',
 					array(
 						'total_sessions' => $compressed_total,
+						'program_hours'  => $recomputed_hours,
 						'updated_at'     => $now,
 					),
 					array( 'id' => $group_id )

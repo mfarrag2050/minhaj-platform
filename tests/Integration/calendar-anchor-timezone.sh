@@ -237,6 +237,124 @@ for expected in 2027-01-12 2027-01-19 2027-01-26; do
 done
 
 echo
+echo "${BOLD}== C-4 · skip_and_compress rewrites BOTH total_sessions AND program_hours ==${RESET}"
+
+# A group of 6 target sessions × 60 min = 360 min = 6 program_hours.
+# Attach a calendar with two disabled Tuesdays inside the 6-week window
+# and switch to skip_and_compress. Expected: total_sessions and
+# program_hours BOTH drop to 4. If only total_sessions moved, the
+# group would claim 6 hours delivered while actually delivering 4 —
+# the class of silent lie spec-compensation-v1 §2 depends on being false.
+
+COMPRESS_CODE=$(cat <<PHP
+add_filter( 'minhaj_org_requires_dpa', '__return_false' );
+
+// Reset only the group + its schedule so we can re-run cleanly.
+global \$wpdb;
+\$wpdb->query( "DELETE FROM wp_minhaj_sessions WHERE group_id = $GROUP_ID" );
+\$wpdb->query( "DELETE FROM wp_minhaj_schedule_patterns WHERE group_id = $GROUP_ID" );
+\$wpdb->update( 'wp_minhaj_groups', [
+    'total_sessions'           => 6,
+    'session_duration_minutes' => 60,
+    'program_hours'            => 6,
+    'holiday_behavior'         => 'skip_and_extend',
+], [ 'id' => $GROUP_ID ] );
+
+// Add two more disabled Tuesdays to the same calendar so 6 candidates
+// end up with 2 dropped after compression trims to 6-2=4.
+\$cal = new \\Minhaj\\Modules\\Calendar\\CalendarService( new \\Minhaj\\Modules\\Calendar\\Repository\\CalendarRepository() );
+\$cal->add_day( 1, $CALENDAR_ID, '2027-01-12', 'closure', 'extra1' );
+\$cal->add_day( 1, $CALENDAR_ID, '2027-01-19', 'closure', 'extra2' );
+
+// C-4 requires MANAGE_GROUPS + reason; user 1 is admin (has MANAGE_GROUPS
+// after activation).
+\$switch = \$cal->set_holiday_behavior( 1, $GROUP_ID, 'skip_and_compress', 'contract dictates fixed weeks' );
+if ( is_wp_error( \$switch ) ) { echo "switch_failed:" . \$switch->get_error_code(); exit(1); }
+
+\$timetable = new \\Minhaj\\Modules\\Timetable\\TimetableService( new \\Minhaj\\Modules\\Timetable\\Repository\\TimetableRepository() );
+\$out = \$timetable->generate_for_group( 1, $GROUP_ID, [
+    'anchor_timezone'  => 'Pacific/Kiritimati',
+    'weekdays'         => [ 2 ],
+    'start_local'      => '00:30',
+    'duration_minutes' => 60,
+    'weeks_count'      => 6,
+    'first_week_start' => '2027-01-05',
+] );
+if ( is_wp_error( \$out ) ) {
+    printf( "COMPRESS=err:%s\n", \$out->get_error_code() );
+    exit(1);
+}
+printf( "COMPRESS=ok count=%d\n", count( \$out ) );
+
+\$row = \$wpdb->get_row( \$wpdb->prepare( 'SELECT total_sessions, program_hours FROM wp_minhaj_groups WHERE id = %d', $GROUP_ID ), ARRAY_A );
+printf( "GROUP_TOTAL=%d GROUP_HOURS=%d\n", (int) \$row['total_sessions'], (int) \$row['program_hours'] );
+PHP
+)
+
+COMPRESS_OUT=$(run_wp eval "$COMPRESS_CODE" | tr -d '\r')
+echo "  $COMPRESS_OUT"
+
+COMPRESS_COUNT=$(printf '%s' "$COMPRESS_OUT" | grep -oE 'COMPRESS=ok count=[0-9]+' | grep -oE '[0-9]+$')
+GROUP_TOTAL=$(printf '%s' "$COMPRESS_OUT" | grep -oE 'GROUP_TOTAL=[0-9]+' | cut -d= -f2)
+GROUP_HOURS=$(printf '%s' "$COMPRESS_OUT" | grep -oE 'GROUP_HOURS=[0-9]+' | cut -d= -f2)
+
+# 3 disabled Tuesdays (01-05, 01-12, 01-19) inside the 6-week window
+# starting 2027-01-05 means only 3 sessions can generate; compress trims
+# to <= expected 6 (no-op) → 3 sessions. total_sessions=3, program_hours=3.
+if [[ "$COMPRESS_COUNT" == "3" ]] && [[ "$GROUP_TOTAL" == "3" ]] && [[ "$GROUP_HOURS" == "3" ]]; then
+  echo "  ${GREEN}✓ compression wrote total_sessions=3 AND program_hours=3 (marketing 6 hours no longer stands)${RESET}"
+else
+  echo "  ${RED}✗ compression=$COMPRESS_COUNT total_sessions=$GROUP_TOTAL program_hours=$GROUP_HOURS — expected 3/3/3${RESET}"
+  FAIL=1
+fi
+
+echo
+echo "${BOLD}== §7-4 · C-5 held-session guard uses local_start_wall (anchor-local), not CONVERT_TZ ==${RESET}"
+
+# Mark the first surviving session (2027-01-26 local, 2027-01-25 UTC) as
+# `completed`, add a calendar day 2027-01-26, then try to delete that
+# calendar day. The guard MUST match on local_start_wall (2027-01-26)
+# and refuse. If it silently used scheduled_start_utc, DATE would be
+# 2027-01-25 and the match would fail — delete would go through even
+# though a held session sits on that anchor-local day.
+#
+# The pattern's UTC vs local divergence at UTC+14 is what makes this
+# an actionable test: the two dates literally differ.
+
+GUARD_CODE=$(cat <<PHP
+global \$wpdb;
+
+// Locate the first surviving session — 2027-01-26 local under compression it is
+// the last one; before that it was seq=3 in the original.
+\$session = \$wpdb->get_row( "SELECT id, local_start_wall, scheduled_start_utc FROM wp_minhaj_sessions WHERE group_id = $GROUP_ID AND DATE(local_start_wall) = '2027-01-26' LIMIT 1", ARRAY_A );
+if ( ! \$session ) { echo "no_matching_session\n"; exit(1); }
+\$wpdb->update( 'wp_minhaj_sessions', [ 'status' => 'completed' ], [ 'id' => (int) \$session['id'] ] );
+printf( "MARKED_COMPLETED session_id=%d local_wall=%s utc_start=%s\n", (int) \$session['id'], \$session['local_start_wall'], \$session['scheduled_start_utc'] );
+
+// Add a calendar day at 2027-01-26 — the anchor-local day of the held session.
+\$cal = new \\Minhaj\\Modules\\Calendar\\CalendarService( new \\Minhaj\\Modules\\Calendar\\Repository\\CalendarRepository() );
+\$new_day = \$cal->add_day( 1, $CALENDAR_ID, '2027-01-26', 'closure', 'holds a held session — must not be deletable' );
+if ( is_wp_error( \$new_day ) ) { echo "add_day_failed:" . \$new_day->get_error_code(); exit(1); }
+printf( "NEW_DAY=%d\n", (int) \$new_day );
+
+\$del = \$cal->delete_day( 1, (int) \$new_day, 'admin cleanup' );
+printf( "DELETE_RESULT=%s\n", is_wp_error( \$del ) ? ( 'err:' . \$del->get_error_code() ) : 'accepted' );
+PHP
+)
+
+GUARD_OUT=$(run_wp eval "$GUARD_CODE" | tr -d '\r')
+echo "  $GUARD_OUT"
+
+DELETE_RESULT=$(printf '%s' "$GUARD_OUT" | grep -oE 'DELETE_RESULT=[a-z:_]+' | cut -d= -f2)
+
+if [[ "$DELETE_RESULT" == "err:held_sessions_present" ]]; then
+  echo "  ${GREEN}✓ delete_day refused — held session on anchor-local 2027-01-26 blocked the delete${RESET}"
+else
+  echo "  ${RED}✗ delete_day returned $DELETE_RESULT — the C-5 guard did not fire${RESET}"
+  FAIL=1
+fi
+
+echo
 if [[ "$FAIL" != "0" ]]; then
   echo "${RED}${BOLD}CALENDAR ANCHOR-TZ PROOF FAILED${RESET}"
   exit 1

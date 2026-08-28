@@ -446,6 +446,56 @@ final class TimetableServiceTest extends TestCase {
 		$this->assertSame( 'no_calendar', $result->get_error_code() );
 	}
 
+	#[TestDox( 'skip_and_extend refuses with calendar_over_disabled when the walker would need more than 2× the caller weeks' )]
+	public function test_skip_and_extend_refuses_when_walk_would_exceed_cap(): void {
+		// Caller asks for 3 weeks × 1 weekday = 3 sessions. If 20 dates
+		// inside the 26-week filter window are disabled, needed_weeks
+		// becomes ~25 which is far beyond the cap (max(6, 3+4)=7).
+		Functions\when( 'apply_filters' )->alias(
+			static function ( string $tag, mixed $value ) {
+				if ( 'minhaj_timetable_skip_dates_for_group' === $tag ) {
+					// 20 arbitrary future Mondays.
+					$dates = array();
+					$cursor = new \DateTimeImmutable( '2026-09-07' );
+					for ( $i = 0; $i < 20; $i++ ) {
+						$dates[] = $cursor->format( 'Y-m-d' );
+						$cursor  = $cursor->modify( '+7 days' );
+					}
+					return $dates;
+				}
+				return $value;
+			}
+		);
+
+		$repo = $this->createMock( TimetableRepository::class );
+		$repo->method( 'find_group' )->willReturn(
+			array(
+				'id'                       => 1,
+				'teacher_id'               => 50,
+				'total_sessions'           => 3,
+				'session_duration_minutes' => 60,
+				'holiday_behavior'         => 'skip_and_extend',
+			)
+		);
+		$repo->expects( $this->never() )->method( 'insert_session' );
+
+		$result = ( new TimetableService( $repo ) )->generate_for_group(
+			7,
+			1,
+			array(
+				'anchor_timezone'  => 'Europe/Amsterdam',
+				'weekdays'         => array( 1 ),
+				'start_local'      => '18:00',
+				'duration_minutes' => 60,
+				'weeks_count'      => 3,
+				'first_week_start' => '2026-09-07',
+			)
+		);
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 'calendar_over_disabled', $result->get_error_code() );
+	}
+
 	#[TestDox( 'spec-calendar §7-2 · skip_and_extend walks past skipped weeks to reach total_sessions with contiguous lesson_no 1..N' )]
 	public function test_skip_and_extend_reaches_target_without_gaps(): void {
 		// Skip week 2 (2026-09-14) via the filter; walker should extend

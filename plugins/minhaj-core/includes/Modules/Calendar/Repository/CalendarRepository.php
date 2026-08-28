@@ -230,9 +230,17 @@ class CalendarRepository {
 	 * the review memo. Takes a FOR UPDATE lock so a concurrent completion
 	 * cannot slip past between the count and the delete.
 	 *
-	 * The date match runs on the anchor timezone of each session (§3.1)
-	 * so a session at 23:00 Amsterdam local counted as Tuesday is not
-	 * treated as Wednesday just because its UTC timestamp says so.
+	 * The date match runs on `local_start_wall`, which was stored at
+	 * generation time as the anchor-local wall clock and MUST NOT be
+	 * re-derived from UTC (spec-timetable-v1 T-3 — tzdata evolves
+	 * several times a year). This is deliberately NOT the earlier
+	 * DATE(CONVERT_TZ(scheduled_start_utc, 'UTC', s.anchor_timezone))
+	 * form: CONVERT_TZ returns NULL when `mysql.time_zone_name` is
+	 * unpopulated (the default on many hosting stacks), which would
+	 * make this guard fail OPEN — matching zero rows and silently
+	 * letting the delete through. Failing open on a policy that
+	 * protects a held session is the exact class of silent bug spec
+	 * §4 asks us to prevent.
 	 */
 	public function count_held_sessions_on_calendar_date_for_update( int $calendar_id, string $day_date_iso ): int {
 		global $wpdb;
@@ -248,8 +256,8 @@ class CalendarRepository {
 					INNER JOIN %i gc ON gc.group_id = s.group_id
 					WHERE gc.calendar_id = %d
 					  AND s.status IN ('live', 'completed')
-					  AND s.scheduled_start_utc IS NOT NULL
-					  AND DATE( CONVERT_TZ( s.scheduled_start_utc, 'UTC', s.anchor_timezone ) ) = %s
+					  AND s.local_start_wall IS NOT NULL
+					  AND DATE( s.local_start_wall ) = %s
 					FOR UPDATE",
 				$sessions,
 				$group_calendars,
