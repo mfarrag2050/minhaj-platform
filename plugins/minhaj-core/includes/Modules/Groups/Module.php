@@ -13,8 +13,10 @@ use Minhaj\Modules\Groups\Admin\AdminController;
 use Minhaj\Modules\Groups\Admin\AjaxSearchController;
 use Minhaj\Modules\Groups\Admin\Assets;
 use Minhaj\Modules\Groups\Migrations\AddDerivedFieldsToGroups;
+use Minhaj\Modules\Groups\Migrations\CreateBatchesTable;
 use Minhaj\Modules\Groups\Migrations\CreateGroupsTables;
 use Minhaj\Modules\Groups\Migrations\DefaultSessionDurationTo60;
+use Minhaj\Modules\Groups\Migrations\UnifyLanguageColumnType;
 use Minhaj\Modules\Groups\Repository\GroupRepository;
 
 defined( 'ABSPATH' ) || exit;
@@ -32,8 +34,10 @@ final class Module {
 
 		add_filter( 'minhaj_core_register_migrations', array( self::class, 'contribute_migrations' ) );
 
+		$repo = new GroupRepository();
+		( new GroupCodeFormatter( $repo ) )->register();
+
 		if ( is_admin() ) {
-			$repo    = new GroupRepository();
 			$service = new GroupService( $repo );
 			( new AdminController( $service, $repo ) )->register();
 			( new Assets() )->register();
@@ -49,6 +53,8 @@ final class Module {
 		$migrations[] = new CreateGroupsTables();
 		$migrations[] = new AddDerivedFieldsToGroups();
 		$migrations[] = new DefaultSessionDurationTo60();
+		$migrations[] = new CreateBatchesTable();
+		$migrations[] = new UnifyLanguageColumnType();
 
 		return $migrations;
 	}

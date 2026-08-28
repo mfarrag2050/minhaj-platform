@@ -16,6 +16,7 @@ declare( strict_types=1 );
 
 namespace Minhaj\Modules\Groups\Repository;
 
+use Minhaj\Modules\Groups\Migrations\CreateBatchesTable;
 use Minhaj\Modules\Groups\Migrations\CreateGroupsTables;
 
 defined( 'ABSPATH' ) || exit;
@@ -120,14 +121,22 @@ class GroupRepository {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$result = $wpdb->insert( $this->groups_table(), $data );
 
-		if ( false === $result ) {
+		if ( false !== $result ) {
+			return (int) $wpdb->insert_id;
+		}
+
+		$error = (string) $wpdb->last_error;
+		if ( str_contains( $error, 'uq_code' ) || str_contains( strtolower( $error ), "'code'" ) ) {
 			throw new PersistenceException(
-				PersistenceException::WRITE_FAILED,
-				'failed to insert group: ' . $wpdb->last_error
+				PersistenceException::DUPLICATE_CODE,
+				'group code collision: ' . $error
 			);
 		}
 
-		return (int) $wpdb->insert_id;
+		throw new PersistenceException(
+			PersistenceException::WRITE_FAILED,
+			'failed to insert group: ' . $error
+		);
 	}
 
 	/**
@@ -517,12 +526,80 @@ class GroupRepository {
 		return (int) $wpdb->insert_id;
 	}
 
+	// ---------------------------------------------------------------- Batches.
+
+	/**
+	 * @return array<string, mixed>|null
+	 */
+	public function find_batch( int $batch_id ): ?array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$row = $wpdb->get_row(
+			$wpdb->prepare(
+				'SELECT * FROM %i WHERE id = %d',
+				$this->batches_table(),
+				$batch_id
+			),
+			ARRAY_A
+		);
+
+		return is_array( $row ) ? $row : null;
+	}
+
+	/**
+	 * List batches an admin can pick from — planned + open + running.
+	 *
+	 * @return array<int, array<string, mixed>>
+	 */
+	public function list_selectable_batches( int $limit = 100 ): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT * FROM %i WHERE status IN ('planned','open','running') ORDER BY starts_on ASC, id ASC LIMIT %d",
+				$this->batches_table(),
+				max( 1, $limit )
+			),
+			ARRAY_A
+		);
+
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
+	 * Count how many groups already carry the given (batch_id, level).
+	 * Feeds the {seq} slot in the auto-generated group code.
+	 */
+	public function count_groups_in_batch_level( int $batch_id, string $level ): int {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$value = $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT COUNT(*) FROM %i WHERE batch_id = %d AND level = %s AND deleted_at IS NULL',
+				$this->groups_table(),
+				$batch_id,
+				$level
+			)
+		);
+
+		return null === $value ? 0 : (int) $value;
+	}
+
 	// ------------------------------------------------------------- Helpers.
 
 	private function groups_table(): string {
 		global $wpdb;
 
 		return $wpdb->prefix . CreateGroupsTables::GROUPS_TABLE;
+	}
+
+	private function batches_table(): string {
+		global $wpdb;
+
+		return $wpdb->prefix . CreateBatchesTable::BATCHES_TABLE;
 	}
 
 	private function members_table(): string {

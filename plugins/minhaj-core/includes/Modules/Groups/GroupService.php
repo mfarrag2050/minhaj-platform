@@ -152,34 +152,92 @@ final class GroupService {
 			return new WP_Error( 'invalid_capacity', $e->getMessage(), array( 'rule' => $e->rule_code() ) );
 		}
 
-		$code = isset( $args['code'] ) ? sanitize_text_field( (string) $args['code'] ) : '';
-
-		/**
-		 * Filter the final code string used for a group.
-		 *
-		 * @param string               $code Proposed code.
-		 * @param array<string, mixed> $args Full create args.
-		 */
-		$code = (string) apply_filters( 'minhaj_group_code_format', $code, $args );
-
-		if ( '' === $code ) {
-			return new WP_Error( 'invalid_code', __( 'A group code is required.', 'minhaj-core' ) );
+		// Language coverage gate BEFORE save. If the proposed locale
+		// has no assignable teacher (spec-people-v1 S-8), refuse
+		// unless an explicit override with a written reason is
+		// provided. The People module subscribes to the filter and
+		// answers with count_assignable_teachers_for_locale.
+		$teaching_language = isset( $args['teaching_language'] )
+			? sanitize_text_field( (string) $args['teaching_language'] )
+			: '';
+		if ( '' !== $teaching_language ) {
+			/**
+			 * Filter · returns the number of teachers who could be
+			 * assigned to a group teaching in $locale. `null` means no
+			 * subscriber answered (People module not loaded); a value
+			 * < 1 blocks group creation unless overridden.
+			 *
+			 * @param int|null $count  Null when no subscriber answered.
+			 * @param string   $locale
+			 */
+			$coverage = apply_filters( 'minhaj_group_teaching_language_coverage', null, $teaching_language );
+			if ( null !== $coverage && (int) $coverage < 1 ) {
+				$override_reason = isset( $args['language_coverage_override_reason'] )
+					? sanitize_text_field( (string) $args['language_coverage_override_reason'] )
+					: '';
+				if ( '' === trim( $override_reason ) ) {
+					return new WP_Error(
+						'no_assignable_teacher_for_language',
+						sprintf(
+							/* translators: %s: locale */
+							__( 'No active teacher can be assigned in %s. Pass language_coverage_override_reason to override.', 'minhaj-core' ),
+							$teaching_language
+						),
+						array(
+							'locale'   => $teaching_language,
+							'coverage' => 0,
+						)
+					);
+				}
+			}
 		}
 
-		if ( $this->repo->code_exists( $code ) ) {
-			return new WP_Error( 'code_taken', __( 'Group code already in use.', 'minhaj-core' ) );
+		// Capacity gate BEFORE save. The published promise is 3–5 seats;
+		// anything higher is a deliberate policy exception and requires
+		// an actor-signed override with a written reason.
+		$default_ceiling = GroupCapacity::defaults_for_type( $type )['max'];
+		if ( $capacity_max > $default_ceiling ) {
+			$reason = isset( $args['capacity_over_promise_reason'] )
+				? sanitize_text_field( (string) $args['capacity_over_promise_reason'] )
+				: '';
+			if ( '' === trim( $reason ) ) {
+				return new WP_Error(
+					'capacity_over_promise',
+					sprintf(
+						/* translators: 1: requested max, 2: default ceiling */
+						__( 'capacity_max %1$d exceeds the published promise of %2$d seats. Pass capacity_over_promise_reason to override.', 'minhaj-core' ),
+						$capacity_max,
+						$default_ceiling
+					),
+					array( 'default_ceiling' => $default_ceiling )
+				);
+			}
+		}
+
+		// Group code is system-generated. A caller may pass an explicit
+		// `code` (admin override + reason) but the default is the
+		// format filter applied to the derived slots.
+		$explicit_code   = isset( $args['code'] ) ? sanitize_text_field( (string) $args['code'] ) : '';
+		$override_reason = isset( $args['code_override_reason'] )
+			? sanitize_text_field( (string) $args['code_override_reason'] )
+			: '';
+
+		if ( '' !== $explicit_code && '' === trim( $override_reason ) ) {
+			return new WP_Error(
+				'code_override_reason_required',
+				__( 'Passing an explicit group code requires code_override_reason.', 'minhaj-core' )
+			);
 		}
 
 		$now = current_time( 'mysql', true );
 
-		$data = array(
-			'code'                     => $code,
+		$data_base = array(
 			'type'                     => $type,
 			'status'                   => GroupStatus::DRAFT,
 			'batch_id'                 => isset( $args['batch_id'] ) ? absint( $args['batch_id'] ) : null,
 			'level'                    => sanitize_text_field( (string) ( $args['level'] ?? '' ) ),
 			'teacher_id'               => isset( $args['teacher_id'] ) ? absint( $args['teacher_id'] ) : null,
-			'teaching_language'        => sanitize_text_field( (string) ( $args['teaching_language'] ?? '' ) ),
+			'teaching_language'        => $teaching_language,
 			'timezone'                 => sanitize_text_field( (string) ( $args['timezone'] ?? 'UTC' ) ),
 			'capacity_min'             => $capacity_min,
 			'capacity_max'             => $capacity_max,
@@ -193,32 +251,77 @@ final class GroupService {
 			'updated_at'               => $now,
 		);
 
-		$this->repo->begin_transaction();
-		try {
-			$group_id = $this->repo->insert_group( $data );
+		$max_attempts = 5;
+		$last_code    = '';
+		$group_id     = 0;
 
-			$this->repo->insert_audit(
-				array(
-					'group_id'      => $group_id,
-					'actor_user_id' => $actor_user_id,
-					'action'        => 'group.created',
-					'subject_id'    => $group_id,
-					'payload_json'  => (string) wp_json_encode(
-						array(
-							'code'         => $code,
-							'type'         => $type,
-							'capacity_min' => $capacity_min,
-							'capacity_max' => $capacity_max,
-						)
-					),
-					'created_at'    => $now,
-				)
-			);
+		for ( $attempt = 0; $attempt < $max_attempts; $attempt++ ) {
+			$last_code = '' !== $explicit_code
+				? $explicit_code
+				: (string) apply_filters( 'minhaj_group_code_format', '', array_merge( $args, array( 'attempt' => $attempt ) ) );
 
-			$this->repo->commit();
-		} catch ( Throwable $e ) {
-			$this->repo->rollback();
-			return new WP_Error( 'persistence_error', $e->getMessage() );
+			if ( '' === $last_code ) {
+				return new WP_Error( 'invalid_code', __( 'A group code is required.', 'minhaj-core' ) );
+			}
+
+			$data         = $data_base;
+			$data['code'] = $last_code;
+
+			$this->repo->begin_transaction();
+			try {
+				$group_id = $this->repo->insert_group( $data );
+
+				$this->repo->insert_audit(
+					array(
+						'group_id'      => $group_id,
+						'actor_user_id' => $actor_user_id,
+						'action'        => 'group.created',
+						'subject_id'    => $group_id,
+						'payload_json'  => (string) wp_json_encode(
+							array(
+								'code'                 => $last_code,
+								'type'                 => $type,
+								'capacity_min'         => $capacity_min,
+								'capacity_max'         => $capacity_max,
+								'code_override_reason' => '' !== $override_reason ? $override_reason : null,
+								'attempt'              => $attempt,
+							)
+						),
+						'created_at'    => $now,
+					)
+				);
+
+				$this->repo->commit();
+				break;
+			} catch ( PersistenceException $e ) {
+				$this->repo->rollback();
+
+				if ( PersistenceException::DUPLICATE_CODE === $e->kind() ) {
+					// Concurrent generator raced us — try again with the
+					// next sequence slot. Explicit codes do NOT retry;
+					// they hard-fail on collision because the admin
+					// chose the exact string.
+					if ( '' !== $explicit_code ) {
+						return new WP_Error( 'code_taken', __( 'Group code already in use.', 'minhaj-core' ) );
+					}
+					if ( $attempt === $max_attempts - 1 ) {
+						return new WP_Error(
+							'code_generation_exhausted',
+							sprintf(
+								/* translators: %d: attempts */
+								__( 'Could not allocate a unique group code after %d attempts — check the code format filter.', 'minhaj-core' ),
+								$max_attempts
+							)
+						);
+					}
+					continue;
+				}
+
+				return new WP_Error( 'persistence_error', $e->getMessage() );
+			} catch ( Throwable $e ) {
+				$this->repo->rollback();
+				return new WP_Error( 'persistence_error', $e->getMessage() );
+			}
 		}
 
 		return $group_id;

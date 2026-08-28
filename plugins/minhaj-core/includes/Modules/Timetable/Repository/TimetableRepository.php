@@ -441,6 +441,67 @@ class TimetableRepository {
 	}
 
 	/**
+	 * The make-up row (if any) that points at the given session_id.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public function find_makeup_for( int $original_session_id ): ?array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$row = $wpdb->get_row(
+			$wpdb->prepare(
+				'SELECT * FROM %i WHERE makeup_for_id = %d LIMIT 1',
+				$this->sessions_table(),
+				$original_session_id
+			),
+			ARRAY_A
+		);
+
+		return is_array( $row ) ? $row : null;
+	}
+
+	/**
+	 * Sessions with `status = 'no_show'` for which no make-up row
+	 * exists — i.e. `makeup_for_id` never got pointed at them. The
+	 * `minhaj_session_no_show` listener fires AFTER commit, and
+	 * post-commit hooks are best-effort: a fatal in the listener, a
+	 * process kill, or a deferred queue that dropped its job all
+	 * leave the debt invisible. This query is the audit that catches
+	 * the drift so the debt shows up in the same admin dashboard the
+	 * cancellation debt does.
+	 *
+	 * @return array<int, array<string, mixed>>
+	 */
+	public function list_no_show_sessions_without_makeup( int $limit = 500 ): array {
+		global $wpdb;
+
+		$sessions = $this->sessions_table();
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT s.id, s.group_id, s.sequence_no, s.lesson_no, s.teacher_id, s.anchor_timezone,
+						s.scheduled_start_utc, s.status
+					FROM %i s
+					WHERE s.status = 'no_show'
+					  AND NOT EXISTS (
+					    SELECT 1 FROM %i m
+					     WHERE m.makeup_for_id = s.id
+					  )
+					ORDER BY s.scheduled_start_utc ASC
+					LIMIT %d",
+				$sessions,
+				$sessions,
+				max( 1, $limit )
+			),
+			ARRAY_A
+		);
+
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
 	 * @return array<string, mixed>|null
 	 */
 	public function find_pattern( int $pattern_id ): ?array {

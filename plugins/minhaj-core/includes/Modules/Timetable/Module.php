@@ -40,7 +40,12 @@ final class Module {
 		// Derived-dates listener: single source for expected_end_date +
 		// has_unscheduled_makeup on the groups table. Wired unconditionally
 		// so the values stay current in admin, cron, CLI, and REST alike.
-		( new SessionDerivedDatesListener( new TimetableRepository() ) )->register();
+		$repo = new TimetableRepository();
+		( new SessionDerivedDatesListener( $repo ) )->register();
+
+		// no_show → unscheduled make-up row. Post-commit; the CLI catches
+		// the gap when this listener fails.
+		( new NoShowMakeupListener( $repo ) )->register();
 
 		if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			$repo = new TimetableRepository();

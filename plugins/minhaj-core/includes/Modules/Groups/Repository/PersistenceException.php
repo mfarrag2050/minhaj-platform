@@ -18,6 +18,7 @@ final class PersistenceException extends RuntimeException {
 
 	public const DUPLICATE_SEAT    = 'duplicate_seat';
 	public const DUPLICATE_STUDENT = 'duplicate_student';
+	public const DUPLICATE_CODE    = 'duplicate_code';
 	public const WRITE_FAILED      = 'write_failed';
 
 	public function __construct(

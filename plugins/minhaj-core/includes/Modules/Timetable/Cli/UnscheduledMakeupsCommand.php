@@ -48,21 +48,48 @@ final class UnscheduledMakeupsCommand {
 		$format = isset( $assoc_args['format'] ) ? (string) $assoc_args['format'] : 'table';
 		$limit  = isset( $assoc_args['limit'] ) ? (int) $assoc_args['limit'] : 500;
 
-		$rows = $this->repo->list_unscheduled_makeups( $limit );
+		$rows    = $this->repo->list_unscheduled_makeups( $limit );
+		$orphans = $this->repo->list_no_show_sessions_without_makeup( $limit );
 
-		if ( array() === $rows ) {
+		if ( array() === $rows && array() === $orphans ) {
 			WP_CLI::success( 'No unscheduled make-ups pending — debt queue is empty.' );
 			return;
 		}
 
-		WP_CLI\Utils\format_items(
-			$format,
-			$rows,
-			array( 'id', 'group_id', 'sequence_no', 'lesson_no', 'teacher_id', 'makeup_for_id', 'anchor_timezone', 'created_at' )
-		);
+		if ( array() !== $rows ) {
+			WP_CLI::log( '' );
+			WP_CLI::log( '== Unscheduled make-ups (explicit debt queue) ==' );
+			WP_CLI\Utils\format_items(
+				$format,
+				$rows,
+				array( 'id', 'group_id', 'sequence_no', 'lesson_no', 'teacher_id', 'makeup_for_id', 'anchor_timezone', 'created_at' )
+			);
+			WP_CLI::warning(
+				sprintf( '%d unscheduled make-up(s) pending — call TimetableService::schedule_makeup() to assign a time.', count( $rows ) )
+			);
+		}
 
-		WP_CLI::warning(
-			sprintf( '%d unscheduled make-up(s) pending — call TimetableService::schedule_makeup() to assign a time.', count( $rows ) )
-		);
+		if ( array() !== $orphans ) {
+			// A no_show session with no make-up row is a reconciliation
+			// gap: the post-COMMIT listener that should have written the
+			// row either never fired (crashed worker, deferred queue
+			// dropped) or was disabled. The gap is silent — no error
+			// surfaces at attendance time — so the CLI is the safety
+			// net. We exit non-zero so cron alerts on it.
+			WP_CLI::log( '' );
+			WP_CLI::log( '== no_show sessions with NO make-up row (reconciliation gap) ==' );
+			WP_CLI\Utils\format_items(
+				$format,
+				$orphans,
+				array( 'id', 'group_id', 'sequence_no', 'lesson_no', 'teacher_id', 'anchor_timezone', 'scheduled_start_utc' )
+			);
+			WP_CLI::warning(
+				sprintf(
+					'%d no_show session(s) have no make-up row — run the make-up backfill or investigate the missing NoShowMakeupListener.',
+					count( $orphans )
+				)
+			);
+			WP_CLI::halt( 1 );
+		}
 	}
 }
