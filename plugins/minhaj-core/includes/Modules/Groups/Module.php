@@ -14,6 +14,7 @@ use Minhaj\Modules\Groups\Admin\AjaxSearchController;
 use Minhaj\Modules\Groups\Admin\Assets;
 use Minhaj\Modules\Groups\Migrations\AddDerivedFieldsToGroups;
 use Minhaj\Modules\Groups\Migrations\CreateBatchesTable;
+use Minhaj\Modules\Groups\Migrations\CreateGroupCodeCounters;
 use Minhaj\Modules\Groups\Migrations\CreateGroupsTables;
 use Minhaj\Modules\Groups\Migrations\DefaultSessionDurationTo60;
 use Minhaj\Modules\Groups\Migrations\UnifyLanguageColumnType;
@@ -55,6 +56,7 @@ final class Module {
 		$migrations[] = new DefaultSessionDurationTo60();
 		$migrations[] = new CreateBatchesTable();
 		$migrations[] = new UnifyLanguageColumnType();
+		$migrations[] = new CreateGroupCodeCounters();
 
 		return $migrations;
 	}

@@ -21,6 +21,7 @@ namespace Minhaj\Modules\Groups\Admin;
 use Minhaj\Modules\Groups\Domain\GroupCapacity;
 use Minhaj\Modules\Groups\Domain\GroupStatus;
 use Minhaj\Modules\Groups\Domain\GroupType;
+use Minhaj\Modules\Groups\Domain\LaunchLanguages;
 use Minhaj\Modules\Groups\GroupService;
 use Minhaj\Modules\Groups\Repository\GroupRepository;
 use WP_Error;
@@ -147,21 +148,25 @@ final class AdminController {
 	 */
 	private function do_create( int $actor, string &$capacity_notice ) {
 		// phpcs:disable WordPress.Security.NonceVerification.Missing  -- Nonce validated in route_action().
+		// Note · no `code` is read from the request. Group codes are
+		// system-generated (see GroupCodeFormatter); the create form
+		// does not accept one. Overriding the code lives on the edit
+		// screen with a written reason.
 		$args = array(
-			'code'              => isset( $_POST['code'] ) ? sanitize_text_field( wp_unslash( $_POST['code'] ) ) : '',
-			'type'              => isset( $_POST['type'] ) ? sanitize_key( wp_unslash( $_POST['type'] ) ) : GroupType::GROUP,
-			'level'             => isset( $_POST['level'] ) ? sanitize_text_field( wp_unslash( $_POST['level'] ) ) : '',
-			'teaching_language' => isset( $_POST['teaching_language'] ) ? sanitize_key( wp_unslash( $_POST['teaching_language'] ) ) : '',
-			'timezone'          => isset( $_POST['timezone'] ) ? sanitize_text_field( wp_unslash( $_POST['timezone'] ) ) : 'UTC',
-			'capacity_min'      => isset( $_POST['capacity_min'] ) ? absint( wp_unslash( $_POST['capacity_min'] ) ) : GroupCapacity::GROUP_DEFAULT_MIN,
-			'capacity_max'      => isset( $_POST['capacity_max'] ) ? absint( wp_unslash( $_POST['capacity_max'] ) ) : GroupCapacity::GROUP_DEFAULT_MAX,
-			'batch_id'          => isset( $_POST['batch_id'] ) ? absint( wp_unslash( $_POST['batch_id'] ) ) : 0,
+			'type'                              => isset( $_POST['type'] ) ? sanitize_key( wp_unslash( $_POST['type'] ) ) : GroupType::GROUP,
+			'level'                             => isset( $_POST['level'] ) ? sanitize_text_field( wp_unslash( $_POST['level'] ) ) : '',
+			'teaching_language'                 => isset( $_POST['teaching_language'] ) ? sanitize_key( wp_unslash( $_POST['teaching_language'] ) ) : '',
+			'timezone'                          => isset( $_POST['timezone'] ) ? sanitize_text_field( wp_unslash( $_POST['timezone'] ) ) : 'UTC',
+			'capacity_min'                      => isset( $_POST['capacity_min'] ) ? absint( wp_unslash( $_POST['capacity_min'] ) ) : GroupCapacity::GROUP_DEFAULT_MIN,
+			'capacity_max'                      => isset( $_POST['capacity_max'] ) ? absint( wp_unslash( $_POST['capacity_max'] ) ) : GroupCapacity::GROUP_DEFAULT_MAX,
+			'batch_id'                          => isset( $_POST['batch_id'] ) ? absint( wp_unslash( $_POST['batch_id'] ) ) : 0,
+			'capacity_over_promise_reason'      => isset( $_POST['capacity_over_promise_reason'] ) ? sanitize_text_field( wp_unslash( $_POST['capacity_over_promise_reason'] ) ) : '',
+			'language_coverage_override_reason' => isset( $_POST['language_coverage_override_reason'] ) ? sanitize_text_field( wp_unslash( $_POST['language_coverage_override_reason'] ) ) : '',
 		);
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
 
-		if ( $args['capacity_max'] > GroupCapacity::GROUP_DEFAULT_MAX ) {
-			$capacity_notice = 'capacity_over_promise';
-		}
+		unset( $capacity_notice );
+		$capacity_notice = '';
 
 		return $this->service->create( $actor, $args );
 	}
@@ -319,18 +324,63 @@ final class AdminController {
 
 	public function render_new_page(): void {
 		$nonce_action = self::NONCE_ACTION;
+
+		// Batches picker — service returns only planned/open/running, so
+		// closed batches never appear as a valid choice at create time.
+		$batches = $this->repo->list_selectable_batches( 200 );
+
+		// Language picker — closed domain from قرار 3 (LaunchLanguages),
+		// each option annotated with live teacher coverage so the admin
+		// sees BEFORE clicking Save whether a locale has anyone to
+		// staff it.
+		$languages = LaunchLanguages::all();
+		$coverage  = array();
+		foreach ( array_keys( $languages ) as $locale ) {
+			$count               = apply_filters( 'minhaj_group_teaching_language_coverage', null, $locale );
+			$coverage[ $locale ] = null === $count ? null : (int) $count;
+		}
 		?>
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Create Group', 'minhaj-core' ); ?></h1>
+			<?php if ( array() === $batches ) : ?>
+				<div class="notice notice-warning inline">
+					<p><?php esc_html_e( 'No open batches. Create a batch (planned / open / running) before adding a group.', 'minhaj-core' ); ?></p>
+				</div>
+			<?php endif; ?>
 			<form method="post" action="<?php echo esc_url( admin_url( 'admin.php?page=' . self::MENU_SLUG ) ); ?>">
 				<?php wp_nonce_field( $nonce_action ); ?>
 				<input type="hidden" name="minhaj_action" value="create"/>
 				<table class="form-table" role="presentation">
 					<tr>
-						<th><label for="code"><?php esc_html_e( 'Code', 'minhaj-core' ); ?></label></th>
+						<th><?php esc_html_e( 'Code', 'minhaj-core' ); ?></th>
 						<td>
-							<input type="text" id="code" name="code" class="regular-text" required
-								placeholder="NL-B2609-A1-03"/>
+							<p class="description">
+								<?php esc_html_e( 'Generated automatically on save from batch + level ({MARKET}-{BATCH}-{LEVEL}-{SEQ}). Frozen once created. To override, edit the group after creation with a written reason.', 'minhaj-core' ); ?>
+							</p>
+						</td>
+					</tr>
+					<tr>
+						<th><label for="batch_id"><?php esc_html_e( 'Batch', 'minhaj-core' ); ?></label></th>
+						<td>
+							<select id="batch_id" name="batch_id" required>
+								<option value=""><?php esc_html_e( '— Pick a batch —', 'minhaj-core' ); ?></option>
+								<?php foreach ( $batches as $b ) : ?>
+									<option value="<?php echo (int) $b['id']; ?>">
+										<?php
+										echo esc_html(
+											sprintf(
+												/* translators: 1: batch code, 2: market code, 3: start date, 4: status */
+												__( '%1$s · %2$s · starts %3$s (%4$s)', 'minhaj-core' ),
+												(string) $b['code'],
+												strtoupper( (string) ( $b['market'] ?? '' ) ),
+												(string) ( $b['starts_on'] ?? '' ),
+												(string) ( $b['status'] ?? '' )
+											)
+										);
+										?>
+									</option>
+								<?php endforeach; ?>
+							</select>
 						</td>
 					</tr>
 					<tr>
@@ -348,16 +398,43 @@ final class AdminController {
 					</tr>
 					<tr>
 						<th><label for="level"><?php esc_html_e( 'Level', 'minhaj-core' ); ?></label></th>
-						<td><input type="text" id="level" name="level" class="regular-text"/></td>
+						<td><input type="text" id="level" name="level" class="regular-text" required/></td>
 					</tr>
 					<tr>
 						<th><label for="teaching_language"><?php esc_html_e( 'Teaching language', 'minhaj-core' ); ?></label></th>
 						<td>
-							<input type="text" id="teaching_language" name="teaching_language" maxlength="5"
-								class="small-text" placeholder="nl"/>
+							<select id="teaching_language" name="teaching_language" required>
+								<option value=""><?php esc_html_e( '— Pick a launch language —', 'minhaj-core' ); ?></option>
+								<?php foreach ( $languages as $locale => $label ) : ?>
+									<?php
+									$count = $coverage[ $locale ] ?? null;
+									if ( null === $count ) {
+										$suffix = '';
+									} elseif ( $count > 0 ) {
+										$suffix = ' · '
+											. sprintf(
+												/* translators: %d: number of assignable teachers */
+												_n( '%d teacher', '%d teachers', $count, 'minhaj-core' ),
+												$count
+											);
+									} else {
+										$suffix = ' · ' . __( 'no assignable teacher', 'minhaj-core' );
+									}
+									?>
+									<option value="<?php echo esc_attr( $locale ); ?>" data-coverage="<?php echo esc_attr( (string) ( $count ?? 'unknown' ) ); ?>">
+										<?php echo esc_html( strtoupper( $locale ) . ' — ' . $label . $suffix ); ?>
+									</option>
+								<?php endforeach; ?>
+							</select>
 							<p class="description">
-								<?php esc_html_e( 'ISO code — the teacher\'s bridge language.', 'minhaj-core' ); ?>
+								<?php esc_html_e( 'Only ISO codes from قرار 3 (LaunchLanguages). Locales with zero assignable teachers require a written override reason below.', 'minhaj-core' ); ?>
 							</p>
+						</td>
+					</tr>
+					<tr>
+						<th><label for="language_coverage_override_reason"><?php esc_html_e( 'Language override reason', 'minhaj-core' ); ?></label></th>
+						<td>
+							<input type="text" id="language_coverage_override_reason" name="language_coverage_override_reason" class="regular-text" placeholder="<?php esc_attr_e( 'Only required if the chosen locale shows «no assignable teacher»', 'minhaj-core' ); ?>"/>
 						</td>
 					</tr>
 					<tr>
@@ -374,11 +451,12 @@ final class AdminController {
 							<input type="number" id="capacity_max" name="capacity_max" min="1"
 								max="<?php echo esc_attr( (string) GroupCapacity::HARD_CAP ); ?>"
 								value="<?php echo esc_attr( (string) GroupCapacity::GROUP_DEFAULT_MAX ); ?>"/>
-							<p class="description" id="capacity-max-hint">
+							<p class="description">
 								<?php
 								printf(
-									/* translators: %d: hard cap enforced by the domain layer. */
-									esc_html__( 'The published promise is 3–5. Values above 5 are allowed up to %d but will show a warning after saving.', 'minhaj-core' ),
+									/* translators: 1: default max, 2: hard cap */
+									esc_html__( 'The published promise is 3–%1$d. Values above %1$d (up to %2$d) require the override reason below — save will be refused otherwise.', 'minhaj-core' ),
+									(int) GroupCapacity::GROUP_DEFAULT_MAX,
 									(int) GroupCapacity::HARD_CAP
 								);
 								?>
@@ -386,10 +464,9 @@ final class AdminController {
 						</td>
 					</tr>
 					<tr>
-						<th><label for="batch_id"><?php esc_html_e( 'Batch ID', 'minhaj-core' ); ?></label></th>
+						<th><label for="capacity_over_promise_reason"><?php esc_html_e( 'Capacity override reason', 'minhaj-core' ); ?></label></th>
 						<td>
-							<input type="number" id="batch_id" name="batch_id" min="0" value="0"/>
-							<p class="description"><?php esc_html_e( 'Leave 0 if not yet assigned.', 'minhaj-core' ); ?></p>
+							<input type="text" id="capacity_over_promise_reason" name="capacity_over_promise_reason" class="regular-text" placeholder="<?php esc_attr_e( 'Only required if capacity max exceeds 5', 'minhaj-core' ); ?>"/>
 						</td>
 					</tr>
 				</table>
@@ -456,7 +533,25 @@ final class AdminController {
 						</td>
 					</tr>
 					<tr><th><?php esc_html_e( 'Language', 'minhaj-core' ); ?></th><td><?php echo esc_html( strtoupper( (string) $group['teaching_language'] ) ); ?></td></tr>
-					<tr><th><?php esc_html_e( 'Batch', 'minhaj-core' ); ?></th><td><?php echo $group['batch_id'] ? '#' . (int) $group['batch_id'] : '—'; ?></td></tr>
+					<tr>
+						<th><?php esc_html_e( 'Batch', 'minhaj-core' ); ?></th>
+						<td>
+							<?php
+							$batch = $group['batch_id'] ? $this->repo->find_batch( (int) $group['batch_id'] ) : null;
+							if ( is_array( $batch ) ) {
+								echo esc_html(
+									sprintf(
+										'%s · %s',
+										(string) $batch['code'],
+										strtoupper( (string) ( $batch['market'] ?? '' ) )
+									)
+								);
+							} else {
+								echo '—';
+							}
+							?>
+						</td>
+					</tr>
 					<tr>
 						<th><?php esc_html_e( 'Planned start', 'minhaj-core' ); ?></th>
 						<td><?php echo esc_html( $group['planned_start_date'] ? (string) $group['planned_start_date'] : '—' ); ?></td>

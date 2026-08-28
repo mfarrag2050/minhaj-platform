@@ -17,6 +17,7 @@ declare( strict_types=1 );
 namespace Minhaj\Modules\Groups\Repository;
 
 use Minhaj\Modules\Groups\Migrations\CreateBatchesTable;
+use Minhaj\Modules\Groups\Migrations\CreateGroupCodeCounters;
 use Minhaj\Modules\Groups\Migrations\CreateGroupsTables;
 
 defined( 'ABSPATH' ) || exit;
@@ -569,8 +570,10 @@ class GroupRepository {
 	}
 
 	/**
-	 * Count how many groups already carry the given (batch_id, level).
-	 * Feeds the {seq} slot in the auto-generated group code.
+	 * Count how many groups already carry the given (batch_id, level),
+	 * **including soft-deleted rows**. Deleted rows still consume their
+	 * slot — this method is a historical read, not a live one. Kept for
+	 * diagnostics; `reserve_next_seq` is what code generation uses.
 	 */
 	public function count_groups_in_batch_level( int $batch_id, string $level ): int {
 		global $wpdb;
@@ -578,7 +581,7 @@ class GroupRepository {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$value = $wpdb->get_var(
 			$wpdb->prepare(
-				'SELECT COUNT(*) FROM %i WHERE batch_id = %d AND level = %s AND deleted_at IS NULL',
+				'SELECT COUNT(*) FROM %i WHERE batch_id = %d AND level = %s',
 				$this->groups_table(),
 				$batch_id,
 				$level
@@ -586,6 +589,50 @@ class GroupRepository {
 		);
 
 		return null === $value ? 0 : (int) $value;
+	}
+
+	/**
+	 * Atomically reserve the next sequence number for a (batch_id, level)
+	 * pair. Runs **outside** any wrapping transaction — the counter must
+	 * survive a rollback, otherwise a failed insert would let the next
+	 * caller reuse the freed slot.
+	 *
+	 * MariaDB / MySQL: `INSERT … ON DUPLICATE KEY UPDATE` is atomic on
+	 * a single row and safe under concurrent execution — the second
+	 * caller blocks on the row lock until the first commits.
+	 *
+	 * Returns the reserved seq (1-based). The counter row's `next_seq`
+	 * always holds the value that WILL be reserved on the next call.
+	 */
+	public function reserve_next_seq( int $batch_id, string $level ): int {
+		global $wpdb;
+
+		$table = $this->counters_table();
+		$now   = current_time( 'mysql', true );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query(
+			$wpdb->prepare(
+				'INSERT INTO %i (batch_id, level, next_seq, updated_at) VALUES (%d, %s, 2, %s)
+				 ON DUPLICATE KEY UPDATE next_seq = next_seq + 1, updated_at = VALUES(updated_at)',
+				$table,
+				$batch_id,
+				$level,
+				$now
+			)
+		);
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$next = $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT next_seq FROM %i WHERE batch_id = %d AND level = %s',
+				$table,
+				$batch_id,
+				$level
+			)
+		);
+
+		return max( 1, (int) $next - 1 );
 	}
 
 	// ------------------------------------------------------------- Helpers.
@@ -600,6 +647,12 @@ class GroupRepository {
 		global $wpdb;
 
 		return $wpdb->prefix . CreateBatchesTable::BATCHES_TABLE;
+	}
+
+	private function counters_table(): string {
+		global $wpdb;
+
+		return $wpdb->prefix . CreateGroupCodeCounters::COUNTER_TABLE;
 	}
 
 	private function members_table(): string {

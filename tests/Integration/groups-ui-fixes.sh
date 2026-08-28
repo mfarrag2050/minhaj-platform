@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Groups UI hardening — live-DB proof for the six items surfaced by the
-# first human use of the admin form.
+# Groups UI hardening — live-DB proof for the fixes surfaced by
+# first + second human use of the admin form.
 #
 #   AC-1 · auto-generated group code (NL-B2609-A1-01)
-#   AC-2 · collision retry produces the next sequence slot
+#   AC-2 · retry-on-collision reserves the next slot from the counter
 #   AC-3 · capacity_max > 5 refused pre-save without a reason
 #   AC-4 · language with zero teacher coverage refused pre-save
-#   AC-5 · unscheduled-makeups CLI catches a no_show session that has
-#          no make-up row (the post-commit listener drop scenario)
+#   AC-5 · unscheduled-makeups CLI catches a no_show session that
+#          has no make-up row (post-commit listener drop scenario)
+#   AC-6 · sequence NEVER reuses a released slot — create 3, delete
+#          the third, create a fourth: fourth must be -04 not -03
 
 set -euo pipefail
 
@@ -28,6 +30,7 @@ run_wp db query "
   DELETE FROM wp_minhaj_group_audit;
   DELETE FROM wp_minhaj_group_members;
   DELETE FROM wp_minhaj_groups;
+  DELETE FROM wp_minhaj_group_code_counters;
   DELETE FROM wp_minhaj_batches;
   DELETE FROM wp_minhaj_sessions;
   DELETE FROM wp_minhaj_schedule_patterns;
@@ -94,25 +97,23 @@ else
 fi
 
 echo
-echo "${BOLD}== AC-2 · concurrent collision retries and lands on next slot ==${RESET}"
+echo "${BOLD}== AC-2 · retry-on-collision reserves the next slot from the counter ==${RESET}"
 
+# Force attempt 0 to collide on an existing code. The retry has to
+# reserve a FRESH seq from the counter (not spin on the same one).
+# After AC-1 the counter is at 4 (three used → next_seq=4).
 COLLISION_CODE=$(cat <<PHP
 add_filter( 'minhaj_group_teaching_language_coverage', fn() => 1 );
 
 \$svc = new \\Minhaj\\Modules\\Groups\\GroupService( new \\Minhaj\\Modules\\Groups\\Repository\\GroupRepository() );
 
-// Pin the formatter to return the SAME code the first time so the retry
-// logic actually retries. On retry the attempt counter bumps the seq.
-\$forced = 'NL-B2609-A1-04';
-add_filter( 'minhaj_group_code_format', function ( \$code, \$args ) use ( \$forced ) {
-    return 0 === (int) ( \$args['attempt'] ?? 0 ) ? \$forced : '';
-}, 5, 2 );
-
-// Pre-seed a group at that exact code.
+// Pre-seed a group at seq 4 so the first counter reservation collides
+// against uq_code. The persistent counter will bump on each attempt,
+// so the retry reserves seq 5.
 global \$wpdb;
 \$now = current_time( 'mysql', true );
 \$wpdb->insert( 'wp_minhaj_groups', [
-    'code'         => \$forced,
+    'code'         => 'NL-B2609-A1-04',
     'type'         => 'group',
     'status'       => 'draft',
     'batch_id'     => $BATCH_ID,
@@ -124,10 +125,6 @@ global \$wpdb;
     'updated_at'   => \$now,
 ] );
 
-// Now create — attempt 0 collides on 04 → falls through to formatter
-// attempt 1 which returns '' (no explicit code), so the DEFAULT formatter
-// runs. It counts existing groups (4 total: 3 earlier + 1 forced) so
-// seq = 5.
 \$id = \$svc->create( 1, [
     'type'              => 'group',
     'batch_id'          => $BATCH_ID,
@@ -145,15 +142,10 @@ COLLISION_OUT=$(run_wp eval "$COLLISION_CODE" | tr -d '\r')
 echo "  $COLLISION_OUT"
 
 COLLISION_CODE_OUT=$(printf '%s' "$COLLISION_OUT" | grep -oE 'RESULT=[A-Z0-9-]+' | cut -d= -f2)
-# On attempt 0 the pinned code collides on the unique index. The retry
-# bumps `attempt` and the default formatter uses `1 + existing_count +
-# attempt` — so seq deliberately skips past the colliding slot to 06,
-# not 05. Bumping on collision is what makes the retry loop safe
-# under concurrent inserts.
-if [[ "$COLLISION_CODE_OUT" == "NL-B2609-A1-06" ]]; then
-  echo "  ${GREEN}✓ retry avoided the collision and landed on $COLLISION_CODE_OUT${RESET}"
+if [[ "$COLLISION_CODE_OUT" == "NL-B2609-A1-05" ]]; then
+  echo "  ${GREEN}✓ retry reserved next counter slot: $COLLISION_CODE_OUT${RESET}"
 else
-  echo "  ${RED}✗ retry returned $COLLISION_CODE_OUT (expected NL-B2609-A1-06)${RESET}"
+  echo "  ${RED}✗ retry returned $COLLISION_CODE_OUT (expected NL-B2609-A1-05)${RESET}"
   FAIL=1
 fi
 
@@ -294,6 +286,85 @@ if grep -q "no_show sessions with NO make-up row" <<<"$CLI_OUT" && grep -q "$ORP
   echo "  ${GREEN}✓ CLI reported the orphaned no_show session ($ORPHAN_SESSION)${RESET}"
 else
   echo "  ${RED}✗ CLI did not surface the reconciliation gap${RESET}"; FAIL=1
+fi
+
+echo
+echo "${BOLD}== AC-6 · sequence never reuses a released slot ==${RESET}"
+
+# Fresh reset so this AC starts from an empty counter.
+run_wp db query "
+  DELETE FROM wp_minhaj_group_audit;
+  DELETE FROM wp_minhaj_group_members;
+  DELETE FROM wp_minhaj_groups;
+  DELETE FROM wp_minhaj_group_code_counters;
+  DELETE FROM wp_minhaj_batches;
+" >/dev/null
+
+SEED2=$(cat <<'PHP'
+global $wpdb;
+$now = current_time( 'mysql', true );
+$wpdb->insert( 'wp_minhaj_batches', [
+    'code'       => 'B2701',
+    'org_id'     => null,
+    'market'     => 'NL',
+    'starts_on'  => '2027-01-01',
+    'status'     => 'open',
+    'created_at' => $now,
+    'updated_at' => $now,
+] );
+printf( "BATCH=%d\n", (int) $wpdb->insert_id );
+PHP
+)
+SEED2_OUT=$(run_wp eval "$SEED2" | tr -d '\r')
+echo "  $SEED2_OUT"
+BATCH2_ID=$(printf '%s' "$SEED2_OUT" | grep -oE 'BATCH=[0-9]+' | cut -d= -f2)
+
+REUSE_CODE=$(cat <<PHP
+add_filter( 'minhaj_group_teaching_language_coverage', fn() => 1 );
+
+\$svc = new \\Minhaj\\Modules\\Groups\\GroupService( new \\Minhaj\\Modules\\Groups\\Repository\\GroupRepository() );
+global \$wpdb;
+
+\$ids = [];
+for ( \$i = 0; \$i < 3; \$i++ ) {
+    \$id = \$svc->create( 1, [
+        'type'              => 'group',
+        'batch_id'          => $BATCH2_ID,
+        'level'             => 'B2',
+        'teaching_language' => 'nl',
+    ] );
+    if ( is_wp_error( \$id ) ) { printf( "CREATE_%d=err:%s\n", \$i, \$id->get_error_code() ); exit; }
+    \$ids[] = (int) \$id;
+    \$code   = (string) \$wpdb->get_var( \$wpdb->prepare( 'SELECT code FROM wp_minhaj_groups WHERE id = %d', \$id ) );
+    printf( "CREATE_%d=%s\n", \$i, \$code );
+}
+
+// Soft-delete the third (via deleted_at) AND hard-delete it (via DELETE)
+// — both must NOT free the slot.
+\$wpdb->query( \$wpdb->prepare( 'UPDATE wp_minhaj_groups SET deleted_at = %s WHERE id = %d', current_time( 'mysql', true ), \$ids[2] ) );
+\$wpdb->query( \$wpdb->prepare( 'DELETE FROM wp_minhaj_groups WHERE id = %d', \$ids[2] ) );
+
+// Create the fourth. Must be -04, not -03.
+\$id4 = \$svc->create( 1, [
+    'type'              => 'group',
+    'batch_id'          => $BATCH2_ID,
+    'level'             => 'B2',
+    'teaching_language' => 'nl',
+] );
+if ( is_wp_error( \$id4 ) ) { printf( "FOURTH=err:%s\n", \$id4->get_error_code() ); exit; }
+\$code4 = (string) \$wpdb->get_var( \$wpdb->prepare( 'SELECT code FROM wp_minhaj_groups WHERE id = %d', \$id4 ) );
+printf( "FOURTH=%s\n", \$code4 );
+PHP
+)
+
+REUSE_OUT=$(run_wp eval "$REUSE_CODE" | tr -d '\r')
+echo "  $REUSE_OUT"
+
+FOURTH=$(printf '%s' "$REUSE_OUT" | grep -oE 'FOURTH=[A-Za-z0-9:_-]+' | cut -d= -f2)
+if [[ "$FOURTH" == "NL-B2701-B2-04" ]]; then
+  echo "  ${GREEN}✓ deleted seq NOT reused — fourth group got $FOURTH${RESET}"
+else
+  echo "  ${RED}✗ FOURTH=$FOURTH (expected NL-B2701-B2-04)${RESET}"; FAIL=1
 fi
 
 echo

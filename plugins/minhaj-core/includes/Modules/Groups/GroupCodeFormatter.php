@@ -5,16 +5,16 @@
  * Format: {MARKET}-{BATCH_CODE}-{LEVEL}-{SEQ}
  *   e.g. NL-B2609-A1-03
  *
- *   • MARKET     from the batch's `market` column (never typed by the admin).
+ *   • MARKET     from the batch's `market` column (never typed by admin).
  *   • BATCH_CODE from the batch's `code` column.
- *   • LEVEL      from the group create args, upper-cased for consistency.
- *   • SEQ        1 + (existing rows in this batch × level) + attempt.
+ *   • LEVEL      from the create args, upper-cased for consistency.
+ *   • SEQ        `reserve_next_seq(batch_id, level)` — a persistent
+ *                counter that never rewinds. Deleting or cancelling
+ *                a group does NOT free its code.
  *
- * Retries on collision: the caller (GroupService::create) walks up to
- * `max_attempts` cycles; each cycle passes an incrementing `attempt` in
- * the args, and this filter uses it to bump the sequence slot rather
- * than reading the DB again. The uq_code on `minhaj_groups.code` is
- * the source of truth, not a pre-flight SELECT.
+ * The counter is bumped once per invocation (once per attempt); each
+ * attempt reserves a fresh slot, so retries after a UNIQUE-index race
+ * do not spin on the same value.
  *
  * @package Minhaj\Modules\Groups
  */
@@ -43,9 +43,9 @@ final class GroupCodeFormatter {
 			return $existing_code;
 		}
 
-		$batch_id = isset( $args['batch_id'] ) ? (int) $args['batch_id'] : 0;
-		$level    = strtoupper( trim( (string) ( $args['level'] ?? '' ) ) );
-		$attempt  = (int) ( $args['attempt'] ?? 0 );
+		$batch_id  = isset( $args['batch_id'] ) ? (int) $args['batch_id'] : 0;
+		$raw_level = trim( (string) ( $args['level'] ?? '' ) );
+		$level     = strtoupper( $raw_level );
 
 		if ( 0 === $batch_id || '' === $level ) {
 			return '';
@@ -63,8 +63,11 @@ final class GroupCodeFormatter {
 			return '';
 		}
 
-		$existing = $this->repo->count_groups_in_batch_level( $batch_id, $args['level'] ?? '' );
-		$seq      = 1 + $existing + $attempt;
+		// Persistent counter — never rewinds, even if the caller's
+		// transaction rolls back. Each call burns a fresh slot; the
+		// retry loop in GroupService::create relies on this to avoid
+		// spinning on the same seq after a UNIQUE-index race.
+		$seq = $this->repo->reserve_next_seq( $batch_id, $level );
 
 		return sprintf( '%s-%s-%s-%02d', $market, $batch_code, $level, $seq );
 	}

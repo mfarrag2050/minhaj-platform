@@ -167,8 +167,24 @@ final class GroupsListTable extends WP_List_Table {
 	 */
 	public function column_batch_id( $item ): string {
 		$batch_id = (int) ( $item['batch_id'] ?? 0 );
+		if ( $batch_id <= 0 ) {
+			return '—';
+		}
 
-		return $batch_id > 0 ? '#' . esc_html( (string) $batch_id ) : '—';
+		$batch = $this->repo->find_batch( $batch_id );
+		if ( ! is_array( $batch ) ) {
+			// Batch id refers to a row that no longer exists — surface
+			// the raw id in fixed-width so the discrepancy is visible.
+			return '<code>#' . esc_html( (string) $batch_id ) . '</code>';
+		}
+
+		return esc_html(
+			sprintf(
+				'%s · %s',
+				(string) $batch['code'],
+				strtoupper( (string) ( $batch['market'] ?? '' ) )
+			)
+		);
 	}
 
 	/**
@@ -232,11 +248,15 @@ final class GroupsListTable extends WP_List_Table {
 			echo '<select name="batch_id" id="filter-batch">';
 			echo '<option value="0">' . esc_html__( 'All batches', 'minhaj-core' ) . '</option>';
 			foreach ( $batches as $bid ) {
+				$row   = $this->repo->find_batch( (int) $bid );
+				$label = is_array( $row )
+					? sprintf( '%s · %s', (string) $row['code'], strtoupper( (string) ( $row['market'] ?? '' ) ) )
+					: '#' . (int) $bid;
 				printf(
-					'<option value="%d"%s>#%d</option>',
+					'<option value="%d"%s>%s</option>',
 					(int) $bid,
 					selected( $batch, (int) $bid, false ),
-					(int) $bid
+					esc_html( $label )
 				);
 			}
 			echo '</select>';
