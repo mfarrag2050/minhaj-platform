@@ -16,6 +16,7 @@ use Minhaj\Modules\Groups\Module as GroupsModule;
 use Minhaj\Modules\Meetings\Module as MeetingsModule;
 use Minhaj\Modules\Orgs\Module as OrgsModule;
 use Minhaj\Modules\People\Module as PeopleModule;
+use Minhaj\Modules\Recordings\Module as RecordingsModule;
 use Minhaj\Modules\Timetable\Module as TimetableModule;
 
 defined( 'ABSPATH' ) || exit;
@@ -71,6 +72,7 @@ final class Plugin {
 		CalendarModule::register();
 		MeetingsModule::register();
 		AttendanceModule::register();
+		RecordingsModule::register();
 	}
 
 	private function __construct() {}
