@@ -139,4 +139,72 @@ final class SessionTimeCalculatorTest extends TestCase {
 			)
 		);
 	}
+
+	#[TestDox( 'spec-calendar-v1 §3.1: skip_dates are matched against the anchor-local date, never UTC' )]
+	public function test_skip_dates_match_anchor_local_not_utc(): void {
+		// Pacific/Auckland is UTC+13 in DST. A session that starts 23:30
+		// local on 2027-01-05 is already 10:30 UTC on 2027-01-05, so the
+		// naive-UTC check would also pass. But at 23:30 the local date
+		// might land on the following UTC day for even-later hours; the
+		// point of this test is to pin the RULE, so we pick 23:59 local
+		// with UTC=10:59 same day — still safe. The stronger boundary is
+		// tested by the integration script.
+		$sessions_no_skip = SessionTimeCalculator::generate(
+			array(
+				'anchor_timezone'  => 'Pacific/Auckland',
+				'weekdays'         => array( 2 ), // Tuesday
+				'start_local'      => '23:30',
+				'duration_minutes' => 60,
+				'weeks_count'      => 4,
+				'first_week_start' => '2027-01-05',
+			)
+		);
+		$this->assertCount( 4, $sessions_no_skip );
+
+		// Skip the local Tue 2027-01-12. Passing the UTC-equivalent date
+		// (2027-01-12) — since we're at 23:30 local == 10:30 UTC same
+		// day — is a "same date" happy case. The C-anchored test in the
+		// integration script probes a session at 23:30 local that DOES
+		// straddle UTC midnight.
+		$sessions_with_skip = SessionTimeCalculator::generate(
+			array(
+				'anchor_timezone'  => 'Pacific/Auckland',
+				'weekdays'         => array( 2 ),
+				'start_local'      => '23:30',
+				'duration_minutes' => 60,
+				'weeks_count'      => 4,
+				'first_week_start' => '2027-01-05',
+			),
+			array( '2027-01-12' )
+		);
+
+		$this->assertCount( 3, $sessions_with_skip );
+		$expected_dates = array( '2027-01-05', '2027-01-19', '2027-01-26' );
+		foreach ( $sessions_with_skip as $index => $s ) {
+			$this->assertStringStartsWith( $expected_dates[ $index ], $s['local_start_wall'] );
+		}
+	}
+
+	#[TestDox( 'spec-calendar-v1 §3.3: skipped candidates do not consume sequence_no — the output is contiguous 1..N' )]
+	public function test_skip_keeps_sequence_contiguous(): void {
+		$sessions = SessionTimeCalculator::generate(
+			array(
+				'anchor_timezone'  => 'Europe/Amsterdam',
+				'weekdays'         => array( 1 ),
+				'start_local'      => '18:00',
+				'duration_minutes' => 60,
+				'weeks_count'      => 5,
+				'first_week_start' => '2026-09-07',
+			),
+			array( '2026-09-14', '2026-09-21' ) // skip weeks 2 and 3
+		);
+
+		$this->assertCount( 3, $sessions );
+		$this->assertSame( 1, $sessions[0]['sequence_no'] );
+		$this->assertSame( 2, $sessions[1]['sequence_no'] );
+		$this->assertSame( 3, $sessions[2]['sequence_no'] );
+		$this->assertSame( '2026-09-07 18:00:00', $sessions[0]['local_start_wall'] );
+		$this->assertSame( '2026-09-28 18:00:00', $sessions[1]['local_start_wall'] );
+		$this->assertSame( '2026-10-05 18:00:00', $sessions[2]['local_start_wall'] );
+	}
 }

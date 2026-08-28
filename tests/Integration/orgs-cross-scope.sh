@@ -378,6 +378,14 @@ global \$wpdb;
     [ 'id' => $GROUP_A ]
 );
 
+// spec-calendar-v1 C-2 · this test is about org suspension, not the
+// calendar policy. Register an explicit no-calendar acknowledgement so
+// the calendar gate lets generation through — the C-2 rule itself is
+// proved in tests/Integration/calendar-anchor-timezone.sh.
+\$calendar_svc = new \\Minhaj\\Modules\\Calendar\\CalendarService( new \\Minhaj\\Modules\\Calendar\\Repository\\CalendarRepository() );
+\$ack = \$calendar_svc->acknowledge_no_calendar( 1, $GROUP_A, 'org-suspension test does not exercise the calendar gate' );
+if ( is_wp_error( \$ack ) ) { echo "ack_failed:" . \$ack->get_error_code(); exit(1); }
+
 \$timetable = new \\Minhaj\\Modules\\Timetable\\TimetableService( new \\Minhaj\\Modules\\Timetable\\Repository\\TimetableRepository() );
 
 \$avail = \$timetable->set_availability( 1, $TEACHER_A, [ [

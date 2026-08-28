@@ -265,22 +265,130 @@ final class TimetableService {
 			);
 		}
 
+		/**
+		 * spec-calendar-v1 C-2 · a group generates only if a calendar is
+		 * attached OR an explicit no-calendar acknowledgement is on file.
+		 * The Calendar module subscribes to this filter; if the module is
+		 * absent (tests that do not load it), the default `true` verdict
+		 * lets generation proceed exactly as it did before the spec.
+		 *
+		 * Subscribers return `true` to allow, `WP_Error` to block. A
+		 * non-error falsy value is treated as a generic rejection so a
+		 * misbehaving plugin cannot silently swallow the veto.
+		 *
+		 * @param true|WP_Error $verdict        Current verdict.
+		 * @param int           $group_id
+		 * @param int           $actor_user_id
+		 */
+		$gate_verdict = apply_filters( 'minhaj_timetable_pre_generate_gate', true, $group_id, $actor_user_id );
+		if ( is_wp_error( $gate_verdict ) ) {
+			return $gate_verdict;
+		}
+		if ( true !== $gate_verdict ) {
+			return new WP_Error( 'pre_generate_gate_rejected', __( 'Generation vetoed by a pre-generate gate.', 'minhaj-core' ) );
+		}
+
+		$expected_total    = (int) ( $group['total_sessions'] ?? 0 );
+		$anchor_tz         = (string) ( $pattern_args['anchor_timezone'] ?? '' );
+		$sessions_per_week = max( 1, count( (array) ( $pattern_args['weekdays'] ?? array() ) ) );
+		$holiday_behavior  = (string) ( $group['holiday_behavior'] ?? 'skip_and_extend' );
+
+		/**
+		 * spec-calendar-v1 §3.1 · the union of disabled dates from every
+		 * calendar attached to this group. Empty array = no skips. Dates
+		 * are matched against the anchor-local date of each candidate
+		 * inside SessionTimeCalculator — never UTC.
+		 *
+		 * The window we ask for extends 2× the base pattern (or 26 weeks,
+		 * whichever is larger) so skip_and_extend has enough runway to
+		 * find replacement dates without a second round-trip.
+		 *
+		 * @param array<int, string> $skip_dates
+		 * @param int                $group_id
+		 * @param string             $anchor_tz
+		 * @param string             $from_iso
+		 * @param string             $to_iso
+		 */
+		$window_first = (string) ( $pattern_args['first_week_start'] ?? '2020-01-01' );
+		$window_last  = ( new \DateTimeImmutable( $window_first ) )
+			->modify( '+' . max( 26, (int) ( $pattern_args['weeks_count'] ?? 12 ) * 2 ) . ' weeks' )
+			->format( 'Y-m-d' );
+
+		$skip_dates = (array) apply_filters(
+			'minhaj_timetable_skip_dates_for_group',
+			array(),
+			$group_id,
+			$anchor_tz,
+			$window_first,
+			$window_last
+		);
+		$skip_dates = array_values( array_filter( array_map( 'strval', $skip_dates ) ) );
+
+		/**
+		 * spec-calendar-v1 C-3 · a stale calendar (no future days ≥ 90
+		 * days out) raises a non-blocking warning. Generation still runs.
+		 */
+		if ( array() !== $skip_dates ) {
+			do_action( 'minhaj_timetable_check_calendar_staleness', $group_id );
+		}
+
 		try {
-			$sessions = SessionTimeCalculator::generate( $pattern_args );
+			// For skip_and_extend, expand the walk window enough to survive
+			// any reasonable amount of holidays. skip_and_compress uses the
+			// caller-supplied weeks_count as-is. When there are NO skips,
+			// the caller's weeks_count is authoritative — extending it
+			// silently would relax the R-1 invariant that catches bad
+			// callers with a pattern that does not match total_sessions.
+			$walk_args = $pattern_args;
+			if (
+				'skip_and_compress' !== $holiday_behavior
+				&& $expected_total > 0
+				&& array() !== $skip_dates
+			) {
+				$walk_args['weeks_count'] = max(
+					(int) $walk_args['weeks_count'],
+					(int) ceil( ( $expected_total + count( $skip_dates ) ) / $sessions_per_week ) + 2
+				);
+			}
+
+			$sessions = SessionTimeCalculator::generate( $walk_args, $skip_dates );
 		} catch ( Throwable $e ) {
 			return new WP_Error( 'invalid_pattern', $e->getMessage() );
 		}
 
-		$expected_total = (int) ( $group['total_sessions'] ?? 0 );
-		if ( $expected_total > 0 && count( $sessions ) !== $expected_total ) {
+		$compressed_total = null;
+
+		if ( 'skip_and_compress' === $holiday_behavior ) {
+			// Trim to the number of sessions that fit inside the caller's
+			// weeks_count after skips. Then persist the actual count on
+			// the group so downstream reports do not silently miss the
+			// compression. C-4.
+			if ( $expected_total > 0 && count( $sessions ) > $expected_total ) {
+				$sessions = array_slice( $sessions, 0, $expected_total );
+			}
+			$compressed_total = count( $sessions );
+		} elseif ( $expected_total > 0 ) {
+			// skip_and_extend · trim the walked overflow to exactly the
+			// contracted count. If the walker did not manage to collect
+			// enough sessions (extremely long holiday run), refuse.
+			if ( count( $sessions ) < $expected_total ) {
+				return new WP_Error(
+					'total_mismatch',
+					sprintf(
+						/* translators: 1: generated count, 2: expected total_sessions */
+						__( 'Skip-and-extend could not reach %2$d sessions (produced %1$d) inside the walk window.', 'minhaj-core' ),
+						count( $sessions ),
+						$expected_total
+					)
+				);
+			}
+			$sessions = array_slice( $sessions, 0, $expected_total );
+		}
+
+		if ( array() === $sessions ) {
 			return new WP_Error(
-				'total_mismatch',
-				sprintf(
-					/* translators: 1: generated count, 2: expected total_sessions */
-					__( 'Pattern produced %1$d sessions but group requires %2$d — R-1 violated.', 'minhaj-core' ),
-					count( $sessions ),
-					$expected_total
-				)
+				'no_sessions_after_skip',
+				__( 'Pattern produced zero sessions after calendar skips.', 'minhaj-core' )
 			);
 		}
 
@@ -322,16 +430,16 @@ final class TimetableService {
 		}
 
 		$now          = current_time( 'mysql', true );
-		$anchor_tz    = (string) $pattern_args['anchor_timezone'];
 		$created_rows = array();
 		$pattern_id   = 0;
+		$pattern_tz   = (string) $pattern_args['anchor_timezone'];
 
 		$this->repo->begin_transaction();
 		try {
 			$pattern_id = $this->repo->insert_pattern(
 				array(
 					'group_id'         => $group_id,
-					'anchor_timezone'  => $anchor_tz,
+					'anchor_timezone'  => $pattern_tz,
 					'weekdays_json'    => (string) wp_json_encode( array_values( $pattern_args['weekdays'] ) ),
 					'start_local'      => $pattern_args['start_local'],
 					'duration_minutes' => (int) $pattern_args['duration_minutes'],
@@ -376,7 +484,7 @@ final class TimetableService {
 					'scheduled_start_utc' => $s['scheduled_start_utc'],
 					'scheduled_end_utc'   => $s['scheduled_end_utc'],
 					'local_start_wall'    => $s['local_start_wall'],
-					'anchor_timezone'     => $anchor_tz,
+					'anchor_timezone'     => $pattern_tz,
 					'teacher_id'          => $teacher_id,
 					'status'              => SessionStatus::SCHEDULED,
 					'created_at'          => $now,
@@ -405,15 +513,36 @@ final class TimetableService {
 					'subject_id'    => $pattern_id,
 					'payload_json'  => (string) wp_json_encode(
 						array(
-							'pattern_id'    => $pattern_id,
-							'session_count' => count( $created_rows ),
-							'first_utc'     => $window_from,
-							'last_utc'      => $window_to,
+							'pattern_id'       => $pattern_id,
+							'session_count'    => count( $created_rows ),
+							'first_utc'        => $window_from,
+							'last_utc'         => $window_to,
+							'holiday_behavior' => $holiday_behavior,
+							'compressed_total' => $compressed_total,
 						)
 					),
 					'created_at'    => $now,
 				)
 			);
+
+			// C-4 · when compression drops the session count, the actual
+			// number gets written back to the group so downstream reports
+			// do not silently keep the marketing 36. Writing to a Groups
+			// column from Timetable is a scoped exception — the derived-
+			// dates listener already does the same for expected_end_date.
+			if ( 'skip_and_compress' === $holiday_behavior && null !== $compressed_total ) {
+				global $wpdb;
+
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$wpdb->update(
+					$wpdb->prefix . 'minhaj_groups',
+					array(
+						'total_sessions' => $compressed_total,
+						'updated_at'     => $now,
+					),
+					array( 'id' => $group_id )
+				);
+			}
 
 			$this->repo->commit();
 		} catch ( PersistenceException $e ) {

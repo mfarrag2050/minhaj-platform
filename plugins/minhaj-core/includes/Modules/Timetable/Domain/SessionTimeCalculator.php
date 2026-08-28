@@ -43,6 +43,18 @@ final class SessionTimeCalculator {
 	/**
 	 * Compute the ordered session sequence for a pattern.
 	 *
+	 * The optional `skip_dates` argument is spec-calendar-v1 §3.1: any
+	 * candidate whose *anchor-local* date matches an entry is dropped
+	 * from the output. **Never UTC** — a session at 23:00 Amsterdam
+	 * local is a Tuesday even though its UTC timestamp says Wednesday.
+	 * That guarantee is why this reuses the same anchor projection as
+	 * DST handling; the whole module exists to keep those two lookups
+	 * consistent.
+	 *
+	 * Skipped candidates do NOT advance the sequence — `sequence_no` is
+	 * assigned only to sessions that make it into the output, so callers
+	 * see a contiguous 1..N with no gaps (§3.3).
+	 *
 	 * @param array{
 	 *   anchor_timezone: string,
 	 *   weekdays: array<int, int>,
@@ -51,6 +63,7 @@ final class SessionTimeCalculator {
 	 *   weeks_count: int,
 	 *   first_week_start: string
 	 * } $args
+	 * @param array<int, string> $skip_dates ISO YYYY-MM-DD dates in anchor tz.
 	 *
 	 * @return array<int, array{
 	 *   sequence_no: int,
@@ -62,13 +75,20 @@ final class SessionTimeCalculator {
 	 *
 	 * @throws InvalidArgumentException On malformed input — callers must validate at the boundary.
 	 */
-	public static function generate( array $args ): array {
+	public static function generate( array $args, array $skip_dates = array() ): array {
 		$anchor_tz  = self::require_timezone( $args['anchor_timezone'] ?? '' );
 		$weekdays   = self::normalise_weekdays( $args['weekdays'] ?? array() );
 		$start_time = self::require_time( $args['start_local'] ?? '' );
 		$duration   = (int) ( $args['duration_minutes'] ?? 0 );
 		$weeks      = (int) ( $args['weeks_count'] ?? 0 );
 		$first_week = self::require_date( $args['first_week_start'] ?? '' );
+
+		$skip_lookup = array();
+		foreach ( $skip_dates as $date ) {
+			if ( is_string( $date ) && 1 === preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) ) {
+				$skip_lookup[ $date ] = true;
+			}
+		}
 
 		if ( $duration < 1 ) {
 			throw new InvalidArgumentException( 'duration_minutes must be ≥ 1' );
@@ -97,6 +117,12 @@ final class SessionTimeCalculator {
 
 				if ( false === $local ) {
 					throw new InvalidArgumentException( 'invalid date arithmetic on anchor' );
+				}
+
+				// spec-calendar-v1 §3.1 · match skip in ANCHOR timezone, never UTC.
+				$local_date_iso = $local->format( 'Y-m-d' );
+				if ( isset( $skip_lookup[ $local_date_iso ] ) ) {
+					continue;
 				}
 
 				$utc_start = $local->setTimezone( $utc_zone );

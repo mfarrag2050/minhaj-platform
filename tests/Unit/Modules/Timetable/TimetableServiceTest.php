@@ -410,6 +410,105 @@ final class TimetableServiceTest extends TestCase {
 		$this->assertSame( 'total_mismatch', $result->get_error_code() );
 	}
 
+	// ============================================== spec-calendar-v1 §7 · integration.
+
+	#[TestDox( 'C-2: gate filter returns WP_Error → generate refuses without calling insert_session' )]
+	public function test_gate_veto_blocks_generation(): void {
+		Functions\when( 'apply_filters' )->alias(
+			static function ( string $tag, mixed $value ) {
+				if ( 'minhaj_timetable_pre_generate_gate' === $tag ) {
+					return new WP_Error( 'no_calendar', 'no calendar attached' );
+				}
+				return $value;
+			}
+		);
+
+		$repo = $this->createMock( TimetableRepository::class );
+		$repo->method( 'find_group' )->willReturn(
+			array( 'id' => 1, 'teacher_id' => 50, 'total_sessions' => 3, 'session_duration_minutes' => 60 )
+		);
+		$repo->expects( $this->never() )->method( 'insert_session' );
+
+		$result = ( new TimetableService( $repo ) )->generate_for_group(
+			7,
+			1,
+			array(
+				'anchor_timezone'  => 'Europe/Amsterdam',
+				'weekdays'         => array( 1 ),
+				'start_local'      => '18:00',
+				'duration_minutes' => 60,
+				'weeks_count'      => 3,
+				'first_week_start' => '2026-09-07',
+			)
+		);
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 'no_calendar', $result->get_error_code() );
+	}
+
+	#[TestDox( 'spec-calendar §7-2 · skip_and_extend walks past skipped weeks to reach total_sessions with contiguous lesson_no 1..N' )]
+	public function test_skip_and_extend_reaches_target_without_gaps(): void {
+		// Skip week 2 (2026-09-14) via the filter; walker should extend
+		// by one week to hit 3 sessions total.
+		Functions\when( 'apply_filters' )->alias(
+			static function ( string $tag, mixed $value ) {
+				if ( 'minhaj_timetable_skip_dates_for_group' === $tag ) {
+					return array( '2026-09-14' );
+				}
+				return $value;
+			}
+		);
+
+		$repo = $this->createMock( TimetableRepository::class );
+		$repo->method( 'find_group' )->willReturn(
+			array(
+				'id'                       => 1,
+				'teacher_id'               => 50,
+				'total_sessions'           => 3,
+				'session_duration_minutes' => 60,
+				'holiday_behavior'         => 'skip_and_extend',
+			)
+		);
+		$repo->method( 'list_availability_for_teacher_between' )->willReturn(
+			array( $this->slot( array( 'weekday' => 1 ) ) )
+		);
+		$repo->method( 'list_absences_for_teacher_between' )->willReturn( array() );
+		$repo->method( 'lock_teacher_sessions_between' )->willReturn( array() );
+		$repo->method( 'insert_pattern' )->willReturn( 99 );
+		$repo->method( 'insert_audit' )->willReturn( 1 );
+
+		$captured = array();
+		$repo->method( 'insert_session' )->willReturnCallback(
+			function ( array $data ) use ( &$captured ): int {
+				$captured[] = $data;
+				return 1000 + (int) $data['sequence_no'];
+			}
+		);
+
+		$result = ( new TimetableService( $repo ) )->generate_for_group(
+			7,
+			1,
+			array(
+				'anchor_timezone'  => 'Europe/Amsterdam',
+				'weekdays'         => array( 1 ),
+				'start_local'      => '18:00',
+				'duration_minutes' => 60,
+				'weeks_count'      => 3,
+				'first_week_start' => '2026-09-07',
+			)
+		);
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 3, $result );
+
+		$sequence_nos = array_map( static fn( array $r ) => (int) $r['sequence_no'], $captured );
+		$this->assertSame( array( 1, 2, 3 ), $sequence_nos );
+
+		// The skipped Monday (2026-09-14) is not in the local_start_wall values.
+		$walls = array_map( static fn( array $r ) => (string) $r['local_start_wall'], $captured );
+		$this->assertNotContains( '2026-09-14 18:00:00', $walls );
+	}
+
 	// ========================================================================= cancel.
 
 	#[TestDox( 'spec §5.1: cancel session 5 of 36 — seq keeps 5/cancelled/NULL, decrement runs on seq>5, makeup lands at seq=37/lesson=36 with makeup_for_id=session id' )]
