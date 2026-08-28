@@ -370,9 +370,7 @@ add_filter( 'minhaj_org_requires_dpa', '__return_false' );
 if ( is_wp_error( \$link ) ) { echo "seed_link_failed:" . \$link->get_error_code(); exit(1); }
 \$token = \$link['token'];
 
-// Baseline: teacher availability + tiny pattern so we can prove generation
-// still works AFTER suspension. Total_sessions is pushed to 3 so the R-1
-// check inside generate_for_group matches.
+// Baseline: pattern totals + teacher availability so generation can run.
 global \$wpdb;
 \$wpdb->update(
     'wp_minhaj_groups',
@@ -392,9 +390,35 @@ global \$wpdb;
 ] ] );
 if ( is_wp_error( \$avail ) ) { echo "avail_failed:" . \$avail->get_error_code(); exit(1); }
 
+// Promote group A to ACTIVE before suspending the org. A draft group
+// teaches nobody, so proving suspension does not touch it would be
+// hollow — the spec (O-6) protects children in the middle of a paid
+// programme, and a "middle of a paid programme" group is running.
+\$groups_svc = new \\Minhaj\\Modules\\Groups\\GroupService( new \\Minhaj\\Modules\\Groups\\Repository\\GroupRepository() );
+
+// R-2 needs active_members >= capacity_min (=3). Seed two filler members.
+foreach ( [ 'filler1', 'filler2' ] as \$slug ) {
+    \$uid = wp_insert_user( [
+        'user_login' => \$slug . '_a_' . uniqid(),
+        'user_pass'  => wp_generate_password(),
+        'role'       => 'minhaj_student',
+    ] );
+    if ( is_wp_error( \$uid ) ) { echo "filler_insert_failed:" . \$uid->get_error_code(); exit(1); }
+    \$res = \$groups_svc->add_member( 1, $GROUP_A, \$uid );
+    if ( is_wp_error( \$res ) ) { echo "add_filler_failed:" . \$res->get_error_code(); exit(1); }
+}
+
+foreach ( [ 'forming', 'scheduled', 'active' ] as \$next ) {
+    \$t = \$groups_svc->transition( 1, $GROUP_A, \$next, 'test-promote-to-active' );
+    if ( is_wp_error( \$t ) ) { echo "transition_failed_at_{\$next}:" . \$t->get_error_code(); exit(1); }
+}
+
+\$row = \$wpdb->get_row( \$wpdb->prepare( 'SELECT status FROM wp_minhaj_groups WHERE id = %d', $GROUP_A ), ARRAY_A );
+printf( "GROUP_A_STATUS_BEFORE_SUSPEND=%s\n", (string) \$row['status'] );
+
 // Suspend org A.
 \$suspend = \$svc->set_status( 1, $ORG_A, 'suspended', 'test-suspend' );
-printf( "SUSPEND=%s\n", is_wp_error( \$suspend ) ? ( 'err:' . \$suspend->get_error_code() ) : 'ok' );
+printf( "SET_STATUS_CALL=%s\n", is_wp_error( \$suspend ) ? ( 'err:' . \$suspend->get_error_code() ) : 'ok' );
 
 // Row-level status on group A must be untouched by the org suspension.
 \$row = \$wpdb->get_row( \$wpdb->prepare( 'SELECT status FROM wp_minhaj_groups WHERE id = %d', $GROUP_A ), ARRAY_A );
@@ -428,12 +452,20 @@ PHP
 SUSPEND_OUT=$(run_wp eval "$SUSPEND_CODE" | tr -d '\r')
 echo "  $SUSPEND_OUT"
 
-SUSPEND_RESULT=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'SUSPEND=[a-z:_]+' | cut -d= -f2)
+SUSPEND_RESULT=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'SET_STATUS_CALL=[a-z:_]+' | cut -d= -f2)
+GROUP_A_STATUS_BEFORE_SUSPEND=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'GROUP_A_STATUS_BEFORE_SUSPEND=[a-z]+' | cut -d= -f2)
 GROUP_A_STATUS_AFTER=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'GROUP_A_STATUS_AFTER=[a-z]+' | cut -d= -f2)
 NEW_LINK_RESULT=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'NEW_LINK=[a-z:_]+' | cut -d= -f2)
 TOKEN_RESOLVE_RESULT=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'TOKEN_RESOLVE=[a-z]+' | cut -d= -f2)
 GENERATE_RESULT=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'GENERATE=[a-z:_]+' | cut -d= -f2)
 GENERATE_COUNT=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'count=[0-9]+' | cut -d= -f2)
+
+if [[ "$GROUP_A_STATUS_BEFORE_SUSPEND" == "active" ]]; then
+  echo "  ${GREEN}✓ group A promoted to active before the suspend — the scenario matches the spec (running group)${RESET}"
+else
+  echo "  ${RED}✗ group A status before suspend was $GROUP_A_STATUS_BEFORE_SUSPEND, not active — scenario invalid${RESET}"
+  FAIL=1
+fi
 
 if [[ "$SUSPEND_RESULT" == "ok" ]]; then
   echo "  ${GREEN}✓ set_status(suspended) succeeded${RESET}"
@@ -442,8 +474,8 @@ else
   FAIL=1
 fi
 
-if [[ "$GROUP_A_STATUS_AFTER" == "draft" ]] || [[ "$GROUP_A_STATUS_AFTER" == "active" ]] || [[ "$GROUP_A_STATUS_AFTER" == "scheduled" ]]; then
-  echo "  ${GREEN}✓ group A status untouched (=$GROUP_A_STATUS_AFTER) — no cascade from org.status${RESET}"
+if [[ "$GROUP_A_STATUS_AFTER" == "active" ]]; then
+  echo "  ${GREEN}✓ group A status stays active after the org suspend — no cascade${RESET}"
 else
   echo "  ${RED}✗ group A status changed to $GROUP_A_STATUS_AFTER — suspension cascaded${RESET}"
   FAIL=1
