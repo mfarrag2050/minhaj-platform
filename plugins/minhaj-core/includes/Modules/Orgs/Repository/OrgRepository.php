@@ -19,7 +19,7 @@ declare( strict_types=1 );
 namespace Minhaj\Modules\Orgs\Repository;
 
 use Minhaj\Modules\Orgs\Migrations\CreateOrgsTables;
-use Minhaj\Modules\People\Migrations\CreatePeopleTables;
+use Minhaj\Modules\People\Migrations\RestructureStudentsForNonWpIdentity;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -430,8 +430,8 @@ class OrgRepository {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$rows = $wpdb->get_results(
 			$wpdb->prepare(
-				'SELECT user_id, registration_link_id, created_at FROM %i WHERE origin_org_id = %d AND DATE(created_at) BETWEEN %s AND %s ORDER BY created_at ASC',
-				$wpdb->prefix . CreatePeopleTables::STUDENT_PROFILES_TABLE,
+				'SELECT id AS student_id, user_id, registration_link_id, created_at FROM %i WHERE origin_org_id = %d AND DATE(created_at) BETWEEN %s AND %s ORDER BY created_at ASC',
+				$wpdb->prefix . RestructureStudentsForNonWpIdentity::STUDENTS_TABLE,
 				$org_id,
 				$from_date,
 				$to_date

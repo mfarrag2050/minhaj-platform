@@ -142,4 +142,79 @@ final class TimetableRulesTest extends TestCase {
 			'2026-09-06 18:00:00'
 		);
 	}
+
+	// ================================================ assert_no_student_double_book.
+
+	#[TestDox( 'R-6 · student double-book fires on UTC overlap' )]
+	public function test_student_double_book_fires_on_overlap(): void {
+		$thrown = null;
+		try {
+			TimetableRules::assert_no_student_double_book(
+				array(
+					array(
+						'scheduled_start_utc' => '2026-09-06 16:00:00',
+						'scheduled_end_utc'   => '2026-09-06 17:00:00',
+						'group_id'            => 99,
+					),
+				),
+				'2026-09-06 16:30:00',
+				'2026-09-06 17:30:00',
+				42
+			);
+		} catch ( RuleViolationException $e ) {
+			$thrown = $e;
+		}
+
+		$this->assertNotNull( $thrown );
+		$this->assertSame( 'R-6', $thrown->rule_code() );
+	}
+
+	#[TestDox( 'R-6 · UTC invariant · rows whose scheduled_start_utc do NOT overlap must pass even when local_start_wall would suggest otherwise' )]
+	public function test_student_double_book_is_utc_not_local(): void {
+		$this->expectNotToPerformAssertions();
+
+		// Simulates a student in two groups anchored to different
+		// timezones. `local_start_wall` reads 09:30 in both — a naive
+		// caller that used it would see a false overlap. The rule sees
+		// only `scheduled_start_utc`, and the two windows (07:00-08:00
+		// vs 09:00-10:00) do NOT overlap in UTC.
+		TimetableRules::assert_no_student_double_book(
+			array(
+				array(
+					'scheduled_start_utc' => '2027-01-04 07:00:00', // anchor Asia/Qatar +3
+					'scheduled_end_utc'   => '2027-01-04 08:00:00',
+					'local_start_wall'    => '2027-01-04 09:30:00',
+					'group_id'            => 1,
+				),
+			),
+			'2027-01-04 09:00:00', // anchor Europe/London 0
+			'2027-01-04 10:00:00',
+			42
+		);
+	}
+
+	#[TestDox( 'R-7 · family overlaps returned, not thrown — the caller emits a warning' )]
+	public function test_family_overlaps_returned_not_thrown(): void {
+		$overlaps = TimetableRules::detect_family_overlaps(
+			array(
+				array(
+					'scheduled_start_utc' => '2026-09-06 16:00:00',
+					'scheduled_end_utc'   => '2026-09-06 17:00:00',
+					'student_id'          => 100,
+					'group_id'            => 1,
+				),
+				array(
+					'scheduled_start_utc' => '2026-09-06 20:00:00',
+					'scheduled_end_utc'   => '2026-09-06 21:00:00',
+					'student_id'          => 101,
+					'group_id'            => 2,
+				),
+			),
+			'2026-09-06 16:30:00',
+			'2026-09-06 17:30:00'
+		);
+
+		$this->assertCount( 1, $overlaps );
+		$this->assertSame( 100, $overlaps[0]['student_id'] );
+	}
 }

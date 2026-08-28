@@ -47,12 +47,29 @@ final class PeopleServiceTest extends TestCase {
 
 	// ============================================================ create_student.
 
-	#[TestDox( 'spec §6-1: creating a student from a guardian succeeds and writes exactly one primary-guardian row' )]
+	#[TestDox( 'spec §6-1 · decision 18: creating a student writes one row in minhaj_students, returns the new id, does NOT call wp_insert_user' )]
 	public function test_create_student_writes_primary_guardianship(): void {
 		$repo = $this->createMock( PeopleRepository::class );
 
+		$wp_insert_user_calls = 0;
+		Functions\when( 'wp_insert_user' )->alias(
+			function () use ( &$wp_insert_user_calls ) {
+				++$wp_insert_user_calls;
+				return 555;
+			}
+		);
+
+		$captured_student      = null;
 		$captured_guardianship = null;
-		$repo->expects( $this->once() )->method( 'insert_student_profile' );
+
+		$repo->expects( $this->once() )
+			->method( 'insert_student' )
+			->willReturnCallback(
+				function ( array $data ) use ( &$captured_student ): int {
+					$captured_student = $data;
+					return 42; // new students.id
+				}
+			);
 		$repo->expects( $this->once() )
 			->method( 'insert_guardianship' )
 			->willReturnCallback(
@@ -64,18 +81,21 @@ final class PeopleServiceTest extends TestCase {
 		$repo->expects( $this->once() )->method( 'insert_audit' )->willReturn( 1 );
 		$repo->expects( $this->once() )->method( 'commit' );
 
-		$user_id = ( new PeopleService( $repo ) )->create_student( 7, 42, array( 'first_name' => 'Sara' ) );
+		$student_id = ( new PeopleService( $repo ) )->create_student( 7, 100, array( 'first_name' => 'Sara' ) );
 
-		$this->assertSame( 555, $user_id );
-		$this->assertSame( 42, $captured_guardianship['guardian_id'] );
+		$this->assertSame( 42, $student_id );
+		$this->assertSame( 0, $wp_insert_user_calls, 'wp_insert_user must not be called for a child — decision 18' );
+		$this->assertArrayHasKey( 'user_id', $captured_student );
+		$this->assertNull( $captured_student['user_id'], 'user_id must be NULL by default — a child has no WordPress account' );
+		$this->assertSame( 100, $captured_guardianship['guardian_id'] );
 		$this->assertSame( 1, $captured_guardianship['is_primary'] );
-		$this->assertSame( 555, $captured_guardianship['student_id'] );
+		$this->assertSame( 42, $captured_guardianship['student_id'] );
 	}
 
 	#[TestDox( 'spec §6-2: creating a student without a guardian is rejected (S-1/S-2)' )]
 	public function test_create_student_without_guardian_is_rejected(): void {
 		$repo = $this->createMock( PeopleRepository::class );
-		$repo->expects( $this->never() )->method( 'insert_student_profile' );
+		$repo->expects( $this->never() )->method( 'insert_student' );
 		$repo->expects( $this->never() )->method( 'insert_guardianship' );
 
 		$result = ( new PeopleService( $repo ) )->create_student( 7, 0, array( 'first_name' => 'Sara' ) );
@@ -88,7 +108,7 @@ final class PeopleServiceTest extends TestCase {
 	public function test_second_active_primary_guardian_rejected_at_db_level(): void {
 		$repo = $this->createMock( PeopleRepository::class );
 
-		$repo->method( 'insert_student_profile' );
+		$repo->method( 'insert_student' );
 		$repo->method( 'insert_guardianship' )->willThrowException(
 			new PersistenceException(
 				PersistenceException::DUPLICATE_PRIMARY_GUARDIAN,
@@ -275,7 +295,7 @@ final class PeopleServiceTest extends TestCase {
 	public function test_anonymize_student_blanks_pii_and_writes_audit(): void {
 		$repo = $this->createMock( PeopleRepository::class );
 
-		$repo->method( 'find_student_profile' )->willReturn(
+		$repo->method( 'find_student' )->willReturn(
 			array(
 				'user_id'             => 555,
 				'first_name'          => 'Sara',
@@ -287,7 +307,7 @@ final class PeopleServiceTest extends TestCase {
 
 		$captured_update = null;
 		$repo->expects( $this->once() )
-			->method( 'update_student_profile' )
+			->method( 'update_student' )
 			->willReturnCallback(
 				function ( int $id, array $data ) use ( &$captured_update ): void {
 					$captured_update = array( 'id' => $id, 'data' => $data );
@@ -321,13 +341,13 @@ final class PeopleServiceTest extends TestCase {
 	public function test_anonymize_student_rejects_when_already_anonymized(): void {
 		$repo = $this->createMock( PeopleRepository::class );
 
-		$repo->method( 'find_student_profile' )->willReturn(
+		$repo->method( 'find_student' )->willReturn(
 			array(
 				'user_id'       => 555,
 				'anonymized_at' => '2026-08-01 12:00:00',
 			)
 		);
-		$repo->expects( $this->never() )->method( 'update_student_profile' );
+		$repo->expects( $this->never() )->method( 'update_student' );
 
 		$result = ( new PeopleService( $repo ) )->anonymize_student( 7, 555, 'again' );
 

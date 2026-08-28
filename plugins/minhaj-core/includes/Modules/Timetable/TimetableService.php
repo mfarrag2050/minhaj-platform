@@ -475,6 +475,28 @@ final class TimetableService {
 			// row. See TimetableRepository::lock_teacher_sessions_between().
 			$existing = $this->repo->lock_teacher_sessions_between( $teacher_id, $window_from, $window_to );
 
+			// R-6 · Lock the roster's other sessions across all their groups
+			// so the student double-book check runs against a stable snapshot.
+			// R-7 · Also read the family sessions once, keyed by guardian id.
+			$roster             = $this->repo->list_active_roster_with_primary_guardian( $group_id );
+			$roster_student_ids = array();
+			$guardian_ids       = array();
+			foreach ( $roster as $entry ) {
+				if ( $entry['student_id'] > 0 ) {
+					$roster_student_ids[] = $entry['student_id'];
+				}
+				if ( $entry['guardian_id'] > 0 ) {
+					$guardian_ids[ $entry['guardian_id'] ] = true;
+				}
+			}
+
+			$student_existing_by_id = $this->repo->lock_student_sessions_between( $roster_student_ids, $window_from, $window_to );
+
+			$family_sessions_by_guardian = array();
+			foreach ( array_keys( $guardian_ids ) as $gid ) {
+				$family_sessions_by_guardian[ (int) $gid ] = $this->repo->list_family_sessions_between( (int) $gid, $window_from, $window_to );
+			}
+
 			foreach ( $sessions as $s ) {
 				try {
 					TimetableRules::assert_no_double_book(
@@ -494,6 +516,62 @@ final class TimetableService {
 						),
 						array( 'rule' => $e->rule_code() )
 					);
+				}
+
+				// R-6 · student-level overlap. Blocks generation.
+				//
+				// UTC INVARIANT: the two arguments below MUST be
+				// `scheduled_start_utc` / `scheduled_end_utc`. Overlap is
+				// a question about UTC instants; `local_start_wall`
+				// answers a different question ("what anchor-local day is
+				// this?", used for calendar skips). Confusing the two
+				// produces false positives across mixed-timezone groups
+				// and silently accepts real overlaps that happen to share
+				// a wall-clock string across different UTC times.
+				foreach ( $roster_student_ids as $sid ) {
+					$student_existing = $student_existing_by_id[ $sid ] ?? array();
+					try {
+						TimetableRules::assert_no_student_double_book(
+							$student_existing,
+							$s['scheduled_start_utc'],
+							$s['scheduled_end_utc'],
+							$sid
+						);
+					} catch ( RuleViolationException $e ) {
+						$this->repo->rollback();
+						return new WP_Error(
+							'student_double_book',
+							sprintf(
+								/* translators: 1: local wall clock, 2: student id, 3: reason */
+								__( 'Student %2$d already booked at %1$s: %3$s', 'minhaj-core' ),
+								$s['local_start_wall'],
+								$sid,
+								$e->getMessage()
+							),
+							array( 'rule' => $e->rule_code() )
+						);
+					}
+				}
+
+				// R-7 · family-level overlap emits a WARNING via action; it
+				// does NOT block generation because a two-parent household
+				// might genuinely have two screens.
+				foreach ( $family_sessions_by_guardian as $gid => $family_sessions ) {
+					$overlaps = TimetableRules::detect_family_overlaps(
+						$family_sessions,
+						$s['scheduled_start_utc'],
+						$s['scheduled_end_utc']
+					);
+					if ( array() !== $overlaps ) {
+						do_action(
+							'minhaj_family_overlap_warning',
+							$gid,
+							$group_id,
+							$s['scheduled_start_utc'],
+							$s['scheduled_end_utc'],
+							$overlaps
+						);
+					}
 				}
 
 				$row = array(

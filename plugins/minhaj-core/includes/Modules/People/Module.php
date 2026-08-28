@@ -21,6 +21,7 @@ use Minhaj\Modules\People\Cli\ExpiringChecksCommand;
 use Minhaj\Modules\People\Cli\LanguageCoverageCommand;
 use Minhaj\Modules\People\Cron\ExpiringChecksScanner;
 use Minhaj\Modules\People\Migrations\CreatePeopleTables;
+use Minhaj\Modules\People\Migrations\RestructureStudentsForNonWpIdentity;
 use Minhaj\Modules\People\Repository\PeopleRepository;
 use WP_CLI;
 
@@ -60,6 +61,7 @@ final class Module {
 	 */
 	public static function contribute_migrations( array $migrations ): array {
 		$migrations[] = new CreatePeopleTables();
+		$migrations[] = new RestructureStudentsForNonWpIdentity();
 
 		return $migrations;
 	}

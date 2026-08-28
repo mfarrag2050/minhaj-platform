@@ -19,6 +19,7 @@ declare( strict_types=1 );
 namespace Minhaj\Modules\People\Repository;
 
 use Minhaj\Modules\People\Migrations\CreatePeopleTables;
+use Minhaj\Modules\People\Migrations\RestructureStudentsForNonWpIdentity;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -142,25 +143,32 @@ class PeopleRepository {
 		return is_array( $rows ) ? $rows : array();
 	}
 
-	// ---------------------------------------------------------- Student profiles.
+	// ------------------------------------------------------------- Students.
+	//
+	// Decision 18 · the child's identity (id) is separate from the
+	// optional WordPress user link (user_id). Every write below insists
+	// user_id is either NULL or provided by the caller — the service
+	// layer never fabricates one for a child.
 
 	/**
 	 * @param array<string, mixed> $data
 	 *
 	 * @throws PersistenceException On write failure.
 	 */
-	public function insert_student_profile( array $data ): void {
+	public function insert_student( array $data ): int {
 		global $wpdb;
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$result = $wpdb->insert( $this->student_profiles_table(), $data );
+		$result = $wpdb->insert( $this->students_table(), $data );
 
 		if ( false === $result ) {
 			throw new PersistenceException(
 				PersistenceException::WRITE_FAILED,
-				'failed to insert student profile: ' . $wpdb->last_error
+				'failed to insert student: ' . $wpdb->last_error
 			);
 		}
+
+		return (int) $wpdb->insert_id;
 	}
 
 	/**
@@ -168,16 +176,16 @@ class PeopleRepository {
 	 *
 	 * @throws PersistenceException On write failure.
 	 */
-	public function update_student_profile( int $user_id, array $data ): void {
+	public function update_student( int $student_id, array $data ): void {
 		global $wpdb;
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$result = $wpdb->update( $this->student_profiles_table(), $data, array( 'user_id' => $user_id ) );
+		$result = $wpdb->update( $this->students_table(), $data, array( 'id' => $student_id ) );
 
 		if ( false === $result ) {
 			throw new PersistenceException(
 				PersistenceException::WRITE_FAILED,
-				'failed to update student profile: ' . $wpdb->last_error
+				'failed to update student: ' . $wpdb->last_error
 			);
 		}
 	}
@@ -185,20 +193,63 @@ class PeopleRepository {
 	/**
 	 * @return array<string, mixed>|null
 	 */
-	public function find_student_profile( int $user_id ): ?array {
+	public function find_student( int $student_id ): ?array {
 		global $wpdb;
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$row = $wpdb->get_row(
 			$wpdb->prepare(
-				'SELECT * FROM %i WHERE user_id = %d',
-				$this->student_profiles_table(),
-				$user_id
+				'SELECT * FROM %i WHERE id = %d',
+				$this->students_table(),
+				$student_id
 			),
 			ARRAY_A
 		);
 
 		return is_array( $row ) ? $row : null;
+	}
+
+	/**
+	 * Simple case-insensitive prefix search for the admin autocomplete
+	 * (Groups::AjaxSearchController). Returns non-anonymised rows only.
+	 *
+	 * @return array<int, array{id:int, first_name:string, family_name_initial:string, market:string}>
+	 */
+	public function search_students_by_first_name( string $query, int $limit = 15 ): array {
+		global $wpdb;
+
+		$like = $wpdb->esc_like( $query ) . '%';
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT id, first_name, family_name_initial, market
+					FROM %i
+					WHERE anonymized_at IS NULL AND first_name LIKE %s
+					ORDER BY first_name, id
+					LIMIT %d',
+				$this->students_table(),
+				$like,
+				max( 1, $limit )
+			),
+			ARRAY_A
+		);
+
+		if ( ! is_array( $rows ) ) {
+			return array();
+		}
+
+		$out = array();
+		foreach ( $rows as $r ) {
+			$out[] = array(
+				'id'                  => (int) $r['id'],
+				'first_name'          => (string) $r['first_name'],
+				'family_name_initial' => (string) $r['family_name_initial'],
+				'market'              => (string) $r['market'],
+			);
+		}
+
+		return $out;
 	}
 
 	// ---------------------------------------------------------- Teacher profiles.
@@ -488,10 +539,10 @@ class PeopleRepository {
 		return $wpdb->prefix . CreatePeopleTables::GUARDIANSHIP_TABLE;
 	}
 
-	private function student_profiles_table(): string {
+	private function students_table(): string {
 		global $wpdb;
 
-		return $wpdb->prefix . CreatePeopleTables::STUDENT_PROFILES_TABLE;
+		return $wpdb->prefix . RestructureStudentsForNonWpIdentity::STUDENTS_TABLE;
 	}
 
 	private function teacher_profiles_table(): string {

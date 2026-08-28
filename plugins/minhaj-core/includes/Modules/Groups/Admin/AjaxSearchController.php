@@ -17,6 +17,7 @@ namespace Minhaj\Modules\Groups\Admin;
 
 use Minhaj\Modules\Groups\Repository\GroupRepository;
 use Minhaj\Modules\Groups\Roles;
+use Minhaj\Modules\People\Repository\PeopleRepository;
 use WP_User_Query;
 
 defined( 'ABSPATH' ) || exit;
@@ -47,13 +48,36 @@ final class AjaxSearchController {
 		$role_key = isset( $_GET['role'] ) ? sanitize_key( wp_unslash( (string) $_GET['role'] ) ) : '';
 		$query    = isset( $_GET['q'] ) ? sanitize_text_field( wp_unslash( (string) $_GET['q'] ) ) : '';
 
+		if ( strlen( $query ) < 2 ) {
+			wp_send_json( array() );
+		}
+
+		// Decision 18 · a child is not a WordPress user. The student
+		// autocomplete reads from `minhaj_students` — the identity table
+		// we own — while the teacher autocomplete still walks WP users
+		// because teachers ARE WordPress accounts.
+		if ( 'student' === $role_key ) {
+			$rows    = ( new PeopleRepository() )->search_students_by_first_name( $query, self::MAX_RESULTS );
+			$results = array();
+			foreach ( $rows as $row ) {
+				$results[] = array(
+					'id'    => (int) $row['id'],
+					'value' => (string) $row['first_name'],
+					'label' => sprintf(
+						'%s %s. #%d%s',
+						(string) $row['first_name'],
+						(string) $row['family_name_initial'],
+						(int) $row['id'],
+						'' !== (string) $row['market'] ? ' — ' . (string) $row['market'] : ''
+					),
+				);
+			}
+			wp_send_json( $results );
+		}
+
 		$role = $this->resolve_role( $role_key );
 		if ( '' === $role ) {
 			wp_send_json_error( array( 'message' => 'invalid_role' ), 400 );
-		}
-
-		if ( strlen( $query ) < 2 ) {
-			wp_send_json( array() );
 		}
 
 		$users = new WP_User_Query(

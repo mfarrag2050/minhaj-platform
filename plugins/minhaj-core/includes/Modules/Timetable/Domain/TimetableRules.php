@@ -161,4 +161,78 @@ final class TimetableRules {
 			}
 		}
 	}
+
+	/**
+	 * R-6 · No overlap with an existing session that the same student is
+	 * already booked into. Comparison runs on `scheduled_start_utc` /
+	 * `scheduled_end_utc` — the UTC instants of the two sessions.
+	 * `local_start_wall` is the answer to a different question ("what
+	 * anchor-local day is this?") and must not be used here; the two
+	 * columns exist so the two questions never collide.
+	 *
+	 * The caller MUST have taken a FOR UPDATE row lock over the student's
+	 * existing sessions in the window before calling — same pattern the
+	 * teacher check uses (§7 R-5 caveat also applies at student level).
+	 *
+	 * @param array<int, array{scheduled_start_utc:string, scheduled_end_utc:string, group_id?:int}> $existing_sessions
+	 *
+	 * @throws RuleViolationException On any overlap.
+	 */
+	public static function assert_no_student_double_book(
+		array $existing_sessions,
+		string $session_start_utc,
+		string $session_end_utc,
+		int $student_id
+	): void {
+		foreach ( $existing_sessions as $existing ) {
+			if (
+				$existing['scheduled_start_utc'] < $session_end_utc
+				&& $existing['scheduled_end_utc'] > $session_start_utc
+			) {
+				throw new RuleViolationException(
+					'R-6',
+					sprintf(
+						'student %d already booked %s..%s (group %d) conflicts with session at %s UTC',
+						$student_id,
+						$existing['scheduled_start_utc'],
+						$existing['scheduled_end_utc'],
+						(int) ( $existing['group_id'] ?? 0 ),
+						$session_start_utc
+					)
+				);
+			}
+		}
+	}
+
+	/**
+	 * Family-level overlap detection (R-7): siblings who share a guardian
+	 * cannot both attend two overlapping sessions in different groups —
+	 * the family has only one screen, one adult present, one pair of
+	 * hands to move the children. Return the offending overlaps; the
+	 * service emits an admin warning but does NOT block, because a
+	 * two-parent family might genuinely have two screens.
+	 *
+	 * Compared on UTC — same reason as R-6.
+	 *
+	 * @param array<int, array{scheduled_start_utc:string, scheduled_end_utc:string, student_id:int, group_id?:int}> $sibling_sessions
+	 *
+	 * @return array<int, array{scheduled_start_utc:string, scheduled_end_utc:string, student_id:int, group_id?:int}>
+	 */
+	public static function detect_family_overlaps(
+		array $sibling_sessions,
+		string $session_start_utc,
+		string $session_end_utc
+	): array {
+		$overlaps = array();
+		foreach ( $sibling_sessions as $existing ) {
+			if (
+				$existing['scheduled_start_utc'] < $session_end_utc
+				&& $existing['scheduled_end_utc'] > $session_start_utc
+			) {
+				$overlaps[] = $existing;
+			}
+		}
+
+		return $overlaps;
+	}
 }

@@ -498,9 +498,13 @@ final class AdminController {
 								<td><code><?php echo (int) $m['seat_index']; ?></code></td>
 								<td>#<?php echo (int) $m['student_id']; ?>
 									<?php
-									$student = get_user_by( 'id', (int) $m['student_id'] );
-									if ( $student ) {
-										echo ' ' . esc_html( $student->display_name );
+									// Decision 18 · a child is not a WordPress user;
+									// display the first name from `minhaj_students`
+									// instead of get_user_by( 'id', … ) which used
+									// to conflate identity with authentication.
+									$student = ( new \Minhaj\Modules\People\Repository\PeopleRepository() )->find_student( (int) $m['student_id'] );
+									if ( is_array( $student ) && ! empty( $student['first_name'] ) ) {
+										echo ' ' . esc_html( (string) $student['first_name'] . ' ' . (string) ( $student['family_name_initial'] ?? '' ) . '.' );
 									}
 									?>
 								</td>

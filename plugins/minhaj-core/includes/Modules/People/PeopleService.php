@@ -54,13 +54,20 @@ final class PeopleService {
 	// ================================================================= create_student.
 
 	/**
-	 * S-1 · Students are never self-registered. This is the ONE path that
-	 * creates a student account, and it insists on a guardian at the same
-	 * moment — an orphan student row is a failure mode we refuse to reach.
+	 * S-1 · Students are never self-registered. Decision 18 · a child is
+	 * NOT a WordPress user — this path deliberately does NOT call
+	 * `wp_insert_user()`. The student's identity is `minhaj_students.id`;
+	 * `user_id` stays NULL until (and unless) the student turns 16 and
+	 * needs an account to log in themselves.
 	 *
-	 * @param array<string, mixed> $profile Student profile fields (first_name, family_name_initial, birth_year, ui_locale, market, current_level).
+	 * The guardian is a WordPress user — every audit row's actor_user_id
+	 * still points at a real login. A shared parent account (both
+	 * parents on one wp_users row) would erase who did what and is
+	 * refused by spec-people-v1 §2.1 no matter how convenient.
 	 *
-	 * @return int|WP_Error Newly created student user id, or a WP_Error.
+	 * @param array<string, mixed> $profile Student profile fields.
+	 *
+	 * @return int|WP_Error Newly created students.id, or a WP_Error.
 	 */
 	public function create_student( int $actor_user_id, int $guardian_id, array $profile ) {
 		$actor_check = $this->require_actor( $actor_user_id );
@@ -80,31 +87,14 @@ final class PeopleService {
 			return new WP_Error( 'invalid_profile', __( 'first_name is required.', 'minhaj-core' ) );
 		}
 
-		// The WP user login has to be unique. uniqid() keeps admin from having
-		// to invent one at every creation. The role is the tag from Groups
-		// module — students carry `minhaj_student`, not `minhaj_parent`.
-		$user_id = wp_insert_user(
-			array(
-				'user_login'   => 'student_' . uniqid(),
-				'user_pass'    => wp_generate_password( 24, true, true ),
-				'display_name' => $first_name,
-				'first_name'   => $first_name,
-				'role'         => 'minhaj_student',
-			)
-		);
-
-		if ( is_wp_error( $user_id ) ) {
-			return $user_id;
-		}
-		$user_id = (int) $user_id;
-
-		$now = current_time( 'mysql', true );
+		$now        = current_time( 'mysql', true );
+		$student_id = 0;
 
 		$this->repo->begin_transaction();
 		try {
-			$this->repo->insert_student_profile(
+			$student_id = $this->repo->insert_student(
 				array(
-					'user_id'             => $user_id,
+					'user_id'             => null,
 					'first_name'          => $first_name,
 					'family_name_initial' => isset( $profile['family_name_initial'] )
 						? substr( sanitize_text_field( (string) $profile['family_name_initial'] ), 0, 4 )
@@ -121,7 +111,7 @@ final class PeopleService {
 			$this->repo->insert_guardianship(
 				array(
 					'guardian_id'  => $guardian_id,
-					'student_id'   => $user_id,
+					'student_id'   => $student_id,
 					'relationship' => RelationshipType::PARENT,
 					'is_primary'   => 1,
 					'can_view'     => 1,
@@ -134,7 +124,7 @@ final class PeopleService {
 			$this->repo->insert_audit(
 				array(
 					'subject_type'  => 'student',
-					'subject_id'    => $user_id,
+					'subject_id'    => $student_id,
 					'actor_user_id' => $actor_user_id,
 					'action'        => 'student.created',
 					'payload_json'  => (string) wp_json_encode(
@@ -165,9 +155,9 @@ final class PeopleService {
 			return new WP_Error( 'persistence_error', $e->getMessage() );
 		}
 
-		do_action( Events::STUDENT_CREATED, $user_id, $guardian_id, $actor_user_id );
+		do_action( Events::STUDENT_CREATED, $student_id, $guardian_id, $actor_user_id );
 
-		return $user_id;
+		return $student_id;
 	}
 
 	// ================================================================== add_guardian.
@@ -720,9 +710,9 @@ final class PeopleService {
 			return new WP_Error( 'reason_required', __( 'A reason is required — recorded in the processing log.', 'minhaj-core' ) );
 		}
 
-		$profile = $this->repo->find_student_profile( $student_id );
+		$profile = $this->repo->find_student( $student_id );
 		if ( null === $profile ) {
-			return new WP_Error( 'student_not_found', __( 'Student profile not found.', 'minhaj-core' ) );
+			return new WP_Error( 'student_not_found', __( 'Student not found.', 'minhaj-core' ) );
 		}
 
 		if ( null !== $profile['anonymized_at'] ) {
@@ -733,7 +723,7 @@ final class PeopleService {
 
 		$this->repo->begin_transaction();
 		try {
-			$this->repo->update_student_profile(
+			$this->repo->update_student(
 				$student_id,
 				array(
 					'first_name'          => '',

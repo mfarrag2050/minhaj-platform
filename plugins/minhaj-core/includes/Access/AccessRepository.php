@@ -18,6 +18,7 @@ namespace Minhaj\Access;
 
 use Minhaj\Modules\Groups\Migrations\CreateGroupsTables;
 use Minhaj\Modules\People\Migrations\CreatePeopleTables;
+use Minhaj\Modules\People\Migrations\RestructureStudentsForNonWpIdentity;
 use Minhaj\Modules\Timetable\Migrations\CreateTimetableTables;
 
 defined( 'ABSPATH' ) || exit;
@@ -140,7 +141,12 @@ class AccessRepository {
 	// -------------------------------------------------------------- Student reads.
 
 	/**
-	 * @return array<string, mixed>|null Empty user_id + anonymized_at semantics preserved.
+	 * Decision 18 · the row is now keyed by `students.id`; `user_id` is
+	 * the optional WordPress link and stays NULL for children. Callers
+	 * that need to check "is this actor the student themselves?" compare
+	 * `actor_user_id` to the returned `user_id` — never to `id`.
+	 *
+	 * @return array<string, mixed>|null
 	 */
 	public function find_student_profile( int $student_id ): ?array {
 		global $wpdb;
@@ -148,8 +154,8 @@ class AccessRepository {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$row = $wpdb->get_row(
 			$wpdb->prepare(
-				'SELECT user_id, origin_org_id, anonymized_at FROM %i WHERE user_id = %d',
-				$this->student_profiles_table(),
+				'SELECT id, user_id, origin_org_id, anonymized_at FROM %i WHERE id = %d',
+				$this->students_table(),
 				$student_id
 			),
 			ARRAY_A
@@ -378,10 +384,10 @@ class AccessRepository {
 		return $wpdb->prefix . CreateGroupsTables::AUDIT_TABLE;
 	}
 
-	private function student_profiles_table(): string {
+	private function students_table(): string {
 		global $wpdb;
 
-		return $wpdb->prefix . CreatePeopleTables::STUDENT_PROFILES_TABLE;
+		return $wpdb->prefix . RestructureStudentsForNonWpIdentity::STUDENTS_TABLE;
 	}
 
 	private function guardianship_table(): string {

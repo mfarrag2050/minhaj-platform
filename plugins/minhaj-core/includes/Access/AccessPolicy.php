@@ -110,8 +110,18 @@ final class AccessPolicy {
 			return $this->apply_filter( true, 'view_student', $user_id, $student_id );
 		}
 
-		if ( $user_id === $student_id ) {
-			return $this->apply_filter( true, 'view_student', $user_id, $student_id );
+		// Self-view · decision 18 · the actor is a WordPress user id and
+		// students.id is not; the pre-decision `$user_id === $student_id`
+		// was silently coincidental only when children happened to be WP
+		// users. Now we look up the optional user_id link and compare
+		// against that. NULL user_id (the default) means "child, cannot
+		// self-view" — and the check is skipped.
+		$student_profile = $this->repo->find_student_profile( $student_id );
+		if ( null !== $student_profile ) {
+			$linked_user_id = null === $student_profile['user_id'] ? 0 : (int) $student_profile['user_id'];
+			if ( $linked_user_id > 0 && $linked_user_id === $user_id ) {
+				return $this->apply_filter( true, 'view_student', $user_id, $student_id );
+			}
 		}
 
 		if ( $this->repo->is_active_guardian_with_view( $user_id, $student_id ) ) {
@@ -131,9 +141,8 @@ final class AccessPolicy {
 		}
 
 		// Org admin sees the student iff the student's origin org is in scope.
-		$profile = $this->repo->find_student_profile( $student_id );
-		if ( null !== $profile ) {
-			$origin_org = (int) ( $profile['origin_org_id'] ?? 0 );
+		if ( null !== $student_profile ) {
+			$origin_org = (int) ( $student_profile['origin_org_id'] ?? 0 );
 			if ( $origin_org > 0 && $this->is_org_admin_for( $user_id, $origin_org ) ) {
 				return $this->apply_filter( true, 'view_student', $user_id, $student_id );
 			}
@@ -477,8 +486,8 @@ final class AccessPolicy {
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 			$rows = $wpdb->get_col(
 				$wpdb->prepare(
-					'SELECT user_id FROM %i ORDER BY user_id',
-					$wpdb->prefix . 'minhaj_student_profiles'
+					'SELECT id FROM %i ORDER BY id',
+					$wpdb->prefix . 'minhaj_students'
 				)
 			);
 
@@ -532,8 +541,8 @@ final class AccessPolicy {
 				// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber
 				$rows = $wpdb->get_col(
 					$wpdb->prepare(
-						"SELECT user_id FROM %i WHERE anonymized_at IS NULL AND origin_org_id IN ({$placeholders})",
-						$wpdb->prefix . 'minhaj_student_profiles',
+						"SELECT id FROM %i WHERE anonymized_at IS NULL AND origin_org_id IN ({$placeholders})",
+						$wpdb->prefix . 'minhaj_students',
 						...array_map( 'intval', $orgs )
 					)
 				);

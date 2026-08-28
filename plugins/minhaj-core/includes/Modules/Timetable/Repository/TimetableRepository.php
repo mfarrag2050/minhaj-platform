@@ -485,6 +485,147 @@ class TimetableRepository {
 	}
 
 	/**
+	 * Lock and return every existing session across every group the given
+	 * students are members of, whose window intersects [$from_utc, $to_utc).
+	 * Used by generate_for_group to enforce R-6 (student double-book) while
+	 * inserting a batch of new sessions.
+	 *
+	 * Comparison is on UTC — R-6 is a question about instants.
+	 *
+	 * @param array<int, int> $student_ids
+	 * @return array<int, array<int, array<string, mixed>>> Map of student_id => list of overlapping session rows.
+	 */
+	public function lock_student_sessions_between( array $student_ids, string $from_utc, string $to_utc ): array {
+		global $wpdb;
+
+		$student_ids = array_values( array_unique( array_map( 'intval', $student_ids ) ) );
+		if ( array() === $student_ids ) {
+			return array();
+		}
+
+		$placeholders = implode( ',', array_fill( 0, count( $student_ids ), '%d' ) );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT s.id, s.group_id, s.scheduled_start_utc, s.scheduled_end_utc, gm.student_id
+					FROM %i s
+					INNER JOIN %i gm ON gm.group_id = s.group_id
+					WHERE gm.student_id IN ({$placeholders})
+					  AND gm.status = 'active'
+					  AND s.status NOT IN ('cancelled', 'unscheduled')
+					  AND s.scheduled_start_utc IS NOT NULL
+					  AND s.scheduled_start_utc < %s
+					  AND s.scheduled_end_utc > %s
+					FOR UPDATE",
+				$this->sessions_table(),
+				$wpdb->prefix . 'minhaj_group_members',
+				...array_merge( $student_ids, array( $to_utc, $from_utc ) )
+			),
+			ARRAY_A
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber
+
+		$out = array();
+		foreach ( (array) $rows as $r ) {
+			$sid           = (int) $r['student_id'];
+			$out[ $sid ][] = array(
+				'id'                  => (int) $r['id'],
+				'group_id'            => (int) $r['group_id'],
+				'scheduled_start_utc' => (string) $r['scheduled_start_utc'],
+				'scheduled_end_utc'   => (string) $r['scheduled_end_utc'],
+			);
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Every student attending any group under the given guardian's active
+	 * wards. Used to compute R-7 family overlaps at generation time.
+	 *
+	 * @return array<int, array{student_id:int, group_id:int, scheduled_start_utc:string, scheduled_end_utc:string}>
+	 */
+	public function list_family_sessions_between( int $guardian_id, string $from_utc, string $to_utc ): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT s.id, s.group_id, s.scheduled_start_utc, s.scheduled_end_utc, gm.student_id
+					FROM %i s
+					INNER JOIN %i gm ON gm.group_id = s.group_id
+					INNER JOIN %i g  ON g.student_id = gm.student_id
+					WHERE g.guardian_id = %d
+					  AND g.ended_at IS NULL
+					  AND g.can_view = 1
+					  AND gm.status = 'active'
+					  AND s.status NOT IN ('cancelled', 'unscheduled')
+					  AND s.scheduled_start_utc IS NOT NULL
+					  AND s.scheduled_start_utc < %s
+					  AND s.scheduled_end_utc > %s",
+				$this->sessions_table(),
+				$wpdb->prefix . 'minhaj_group_members',
+				$wpdb->prefix . 'minhaj_guardianship',
+				$guardian_id,
+				$to_utc,
+				$from_utc
+			),
+			ARRAY_A
+		);
+
+		$out = array();
+		foreach ( (array) $rows as $r ) {
+			$out[] = array(
+				'student_id'          => (int) $r['student_id'],
+				'group_id'            => (int) $r['group_id'],
+				'scheduled_start_utc' => (string) $r['scheduled_start_utc'],
+				'scheduled_end_utc'   => (string) $r['scheduled_end_utc'],
+			);
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Roster: every active student in the group, plus their active primary
+	 * guardian id. Feeds generate_for_group's per-session double-book /
+	 * family-overlap checks.
+	 *
+	 * @return array<int, array{student_id:int, guardian_id:int}>
+	 */
+	public function list_active_roster_with_primary_guardian( int $group_id ): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT gm.student_id, g.guardian_id
+					FROM %i gm
+					LEFT JOIN %i g
+						ON g.student_id = gm.student_id
+						AND g.is_primary = 1
+						AND g.ended_at IS NULL
+					WHERE gm.group_id = %d AND gm.status = 'active'",
+				$wpdb->prefix . 'minhaj_group_members',
+				$wpdb->prefix . 'minhaj_guardianship',
+				$group_id
+			),
+			ARRAY_A
+		);
+
+		$out = array();
+		foreach ( (array) $rows as $r ) {
+			$out[] = array(
+				'student_id'  => (int) $r['student_id'],
+				'guardian_id' => null === $r['guardian_id'] ? 0 : (int) $r['guardian_id'],
+			);
+		}
+
+		return $out;
+	}
+
+	/**
 	 * @param array<string, mixed> $data
 	 *
 	 * @throws PersistenceException On failure — DUPLICATE_SEQUENCE if the
