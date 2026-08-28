@@ -214,18 +214,39 @@ final class GroupService {
 			}
 		}
 
-		// Group code is system-generated. A caller may pass an explicit
-		// `code` (admin override + reason) but the default is the
-		// format filter applied to the derived slots.
-		$explicit_code   = isset( $args['code'] ) ? sanitize_text_field( (string) $args['code'] ) : '';
-		$override_reason = isset( $args['code_override_reason'] )
-			? sanitize_text_field( (string) $args['code_override_reason'] )
-			: '';
-
-		if ( '' !== $explicit_code && '' === trim( $override_reason ) ) {
+		// Group code is system-generated · CLAUDE.md § واجهات الإدخال.
+		// The code is a historical label; humans do not choose it,
+		// not even with a written reason. Any caller (admin, CLI,
+		// REST) that tries to pass one is rejected here — no silent
+		// discard, so the rule is visible in error logs.
+		if ( isset( $args['code'] ) || isset( $args['code_override_reason'] ) ) {
 			return new WP_Error(
-				'code_override_reason_required',
-				__( 'Passing an explicit group code requires code_override_reason.', 'minhaj-core' )
+				'code_arg_not_allowed',
+				__( 'Group code is system-generated and cannot be set by the caller. A wrong code is fixed by cancelling the group and creating a new one.', 'minhaj-core' )
+			);
+		}
+
+		// Level is closed by curriculum — see CreateCurriculumLevels
+		// migration. A group belongs to a curriculum, and its level
+		// must exist in that curriculum's catalogue. Default curriculum
+		// today is manhaj-v1.
+		$curriculum_id = isset( $args['curriculum_id'] ) && (int) $args['curriculum_id'] > 0
+			? (int) $args['curriculum_id']
+			: \Minhaj\Modules\Groups\Migrations\CreateCurriculumLevels::MANHAJ_V1_ID;
+		$level         = sanitize_text_field( (string) ( $args['level'] ?? '' ) );
+		if ( '' === $level || ! $this->repo->level_exists( $curriculum_id, $level ) ) {
+			return new WP_Error(
+				'invalid_level',
+				sprintf(
+					/* translators: 1: level code, 2: curriculum id */
+					__( 'Level %1$s is not in curriculum %2$d. Pick from the curriculum\'s catalogue.', 'minhaj-core' ),
+					'' === $level ? '(empty)' : $level,
+					$curriculum_id
+				),
+				array(
+					'level'         => $level,
+					'curriculum_id' => $curriculum_id,
+				)
 			);
 		}
 
@@ -235,7 +256,8 @@ final class GroupService {
 			'type'                     => $type,
 			'status'                   => GroupStatus::DRAFT,
 			'batch_id'                 => isset( $args['batch_id'] ) ? absint( $args['batch_id'] ) : null,
-			'level'                    => sanitize_text_field( (string) ( $args['level'] ?? '' ) ),
+			'curriculum_id'            => $curriculum_id,
+			'level'                    => $level,
 			'teacher_id'               => isset( $args['teacher_id'] ) ? absint( $args['teacher_id'] ) : null,
 			'teaching_language'        => $teaching_language,
 			'timezone'                 => sanitize_text_field( (string) ( $args['timezone'] ?? 'UTC' ) ),
@@ -256,9 +278,15 @@ final class GroupService {
 		$group_id     = 0;
 
 		for ( $attempt = 0; $attempt < $max_attempts; $attempt++ ) {
-			$last_code = '' !== $explicit_code
-				? $explicit_code
-				: (string) apply_filters( 'minhaj_group_code_format', '', array_merge( $args, array( 'attempt' => $attempt ) ) );
+			// The formatter reserves a fresh seq slot on each call
+			// (persistent counter · see GroupCodeFormatter). The
+			// retry loop exists only for the UNIQUE-index race with
+			// externally-inserted rows.
+			$last_code = (string) apply_filters(
+				'minhaj_group_code_format',
+				'',
+				array_merge( $args, array( 'attempt' => $attempt ) )
+			);
 
 			if ( '' === $last_code ) {
 				return new WP_Error( 'invalid_code', __( 'A group code is required.', 'minhaj-core' ) );
@@ -279,12 +307,11 @@ final class GroupService {
 						'subject_id'    => $group_id,
 						'payload_json'  => (string) wp_json_encode(
 							array(
-								'code'                 => $last_code,
-								'type'                 => $type,
-								'capacity_min'         => $capacity_min,
-								'capacity_max'         => $capacity_max,
-								'code_override_reason' => '' !== $override_reason ? $override_reason : null,
-								'attempt'              => $attempt,
+								'code'         => $last_code,
+								'type'         => $type,
+								'capacity_min' => $capacity_min,
+								'capacity_max' => $capacity_max,
+								'attempt'      => $attempt,
 							)
 						),
 						'created_at'    => $now,
@@ -297,13 +324,6 @@ final class GroupService {
 				$this->repo->rollback();
 
 				if ( PersistenceException::DUPLICATE_CODE === $e->kind() ) {
-					// Concurrent generator raced us — try again with the
-					// next sequence slot. Explicit codes do NOT retry;
-					// they hard-fail on collision because the admin
-					// chose the exact string.
-					if ( '' !== $explicit_code ) {
-						return new WP_Error( 'code_taken', __( 'Group code already in use.', 'minhaj-core' ) );
-					}
 					if ( $attempt === $max_attempts - 1 ) {
 						return new WP_Error(
 							'code_generation_exhausted',

@@ -17,6 +17,7 @@ declare( strict_types=1 );
 namespace Minhaj\Modules\Groups\Repository;
 
 use Minhaj\Modules\Groups\Migrations\CreateBatchesTable;
+use Minhaj\Modules\Groups\Migrations\CreateCurriculumLevels;
 use Minhaj\Modules\Groups\Migrations\CreateGroupCodeCounters;
 use Minhaj\Modules\Groups\Migrations\CreateGroupsTables;
 
@@ -653,6 +654,49 @@ class GroupRepository {
 		global $wpdb;
 
 		return $wpdb->prefix . CreateGroupCodeCounters::COUNTER_TABLE;
+	}
+
+	// ------------------------------------------------------- Curriculum levels.
+
+	/**
+	 * @return array<int, array<string, mixed>> ordered by ordinal, then code.
+	 */
+	public function list_curriculum_levels( int $curriculum_id ): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT * FROM %i WHERE curriculum_id = %d ORDER BY ordinal ASC, code ASC',
+				$this->levels_table(),
+				$curriculum_id
+			),
+			ARRAY_A
+		);
+
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	public function level_exists( int $curriculum_id, string $code ): bool {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$value = $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT 1 FROM %i WHERE curriculum_id = %d AND code = %s LIMIT 1',
+				$this->levels_table(),
+				$curriculum_id,
+				$code
+			)
+		);
+
+		return null !== $value;
+	}
+
+	private function levels_table(): string {
+		global $wpdb;
+
+		return $wpdb->prefix . CreateCurriculumLevels::LEVELS_TABLE;
 	}
 
 	private function members_table(): string {

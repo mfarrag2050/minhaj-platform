@@ -64,10 +64,13 @@ final class ErrorMapTest extends TestCase {
 		}
 	}
 
-	public function test_capacity_over_promise_maps_to_warning(): void {
+	public function test_capacity_over_promise_maps_to_error(): void {
+		// The pre-save gate now REFUSES capacity>5 without a written
+		// reason (previously the group was saved with a warning). The
+		// code is therefore an error, not a soft notice.
 		$resolved = ErrorMap::resolve( 'capacity_over_promise' );
 
-		$this->assertSame( 'warning', $resolved['type'] );
+		$this->assertSame( 'error', $resolved['type'] );
 		$this->assertStringContainsStringIgnoringCase( '3', $resolved['message'] );
 		$this->assertStringContainsStringIgnoringCase( '5', $resolved['message'] );
 	}

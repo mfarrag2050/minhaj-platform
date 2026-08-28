@@ -117,6 +117,38 @@ expect_fail "G4 no_show reconciliation" || FAIL=1
 restore_all
 expect_pass "G4 no_show reconciliation restored" || FAIL=1
 
+# G5 — invalid_level. Break by short-circuiting the level check.
+echo ""
+echo "${BOLD}== G5 · level must be in curriculum_levels ==${RESET}"
+python3 - "$GS" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = "if ( '' === $level || ! $this->repo->level_exists( $curriculum_id, $level ) ) {"
+new_line = "if ( false && ( '' === $level || ! $this->repo->level_exists( $curriculum_id, $level ) ) ) {"
+assert old in s, 'break marker not found for G5'
+open(p, 'w').write(s.replace(old, new_line, 1))
+PY
+expect_fail "G5 level gate" || FAIL=1
+restore_all
+expect_pass "G5 level gate restored" || FAIL=1
+
+# G6 — code arg refused. Break by short-circuiting the isset check.
+echo ""
+echo "${BOLD}== G6 · code / code_override_reason arg refused ==${RESET}"
+python3 - "$GS" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = "if ( isset( $args['code'] ) || isset( $args['code_override_reason'] ) ) {"
+new_line = "if ( false && ( isset( $args['code'] ) || isset( $args['code_override_reason'] ) ) ) {"
+assert old in s, 'break marker not found for G6'
+open(p, 'w').write(s.replace(old, new_line, 1))
+PY
+expect_fail "G6 code arg refusal" || FAIL=1
+restore_all
+expect_pass "G6 code arg refusal restored" || FAIL=1
+
 echo ""
 if [[ "$FAIL" != "0" ]]; then
   echo "${RED}${BOLD}BREAK-AND-RESTORE PROOF FAILED${RESET}"

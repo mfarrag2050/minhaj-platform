@@ -155,6 +155,7 @@ final class AdminController {
 		$args = array(
 			'type'                              => isset( $_POST['type'] ) ? sanitize_key( wp_unslash( $_POST['type'] ) ) : GroupType::GROUP,
 			'level'                             => isset( $_POST['level'] ) ? sanitize_text_field( wp_unslash( $_POST['level'] ) ) : '',
+			'curriculum_id'                     => isset( $_POST['curriculum_id'] ) ? absint( wp_unslash( $_POST['curriculum_id'] ) ) : 0,
 			'teaching_language'                 => isset( $_POST['teaching_language'] ) ? sanitize_key( wp_unslash( $_POST['teaching_language'] ) ) : '',
 			'timezone'                          => isset( $_POST['timezone'] ) ? sanitize_text_field( wp_unslash( $_POST['timezone'] ) ) : 'UTC',
 			'capacity_min'                      => isset( $_POST['capacity_min'] ) ? absint( wp_unslash( $_POST['capacity_min'] ) ) : GroupCapacity::GROUP_DEFAULT_MIN,
@@ -329,15 +330,24 @@ final class AdminController {
 		// closed batches never appear as a valid choice at create time.
 		$batches = $this->repo->list_selectable_batches( 200 );
 
-		// Language picker — closed domain from قرار 3 (LaunchLanguages),
-		// each option annotated with live teacher coverage so the admin
-		// sees BEFORE clicking Save whether a locale has anyone to
-		// staff it.
-		$languages = LaunchLanguages::all();
-		$coverage  = array();
-		foreach ( array_keys( $languages ) as $locale ) {
-			$count               = apply_filters( 'minhaj_group_teaching_language_coverage', null, $locale );
-			$coverage[ $locale ] = null === $count ? null : (int) $count;
+		// Level picker — curriculum-scoped. Today one curriculum
+		// (manhaj-v1). Group will pick a curriculum only when a
+		// second one exists.
+		$curriculum_id = \Minhaj\Modules\Groups\Migrations\CreateCurriculumLevels::MANHAJ_V1_ID;
+		$levels        = $this->repo->list_curriculum_levels( $curriculum_id );
+
+		// Language picker — one registry, two views. `for_teaching`
+		// is the recommended list (coverage > 0); the rest still
+		// appear beneath, but only save with a written override
+		// reason. The parent portal's ui_locale reads `for_ui` from
+		// the same registry.
+		$teaching = LaunchLanguages::for_teaching();
+		$registry = LaunchLanguages::all();
+		$fallback = array();
+		foreach ( $registry as $locale => $entry ) {
+			if ( ! isset( $teaching[ $locale ] ) ) {
+				$fallback[ $locale ] = (string) $entry['label'];
+			}
 		}
 		?>
 		<div class="wrap">
@@ -355,7 +365,7 @@ final class AdminController {
 						<th><?php esc_html_e( 'Code', 'minhaj-core' ); ?></th>
 						<td>
 							<p class="description">
-								<?php esc_html_e( 'Generated automatically on save from batch + level ({MARKET}-{BATCH}-{LEVEL}-{SEQ}). Frozen once created. To override, edit the group after creation with a written reason.', 'minhaj-core' ); ?>
+								<?php esc_html_e( 'Generated automatically on save from batch + level ({MARKET}-{BATCH}-{LEVEL}-{SEQ}) and frozen. A code is a historical label — the row\'s columns hold the truth, so the code is never edited. To fix a wrong group, cancel it and create a new one.', 'minhaj-core' ); ?>
 							</p>
 						</td>
 					</tr>
@@ -398,36 +408,60 @@ final class AdminController {
 					</tr>
 					<tr>
 						<th><label for="level"><?php esc_html_e( 'Level', 'minhaj-core' ); ?></label></th>
-						<td><input type="text" id="level" name="level" class="regular-text" required/></td>
+						<td>
+							<input type="hidden" name="curriculum_id" value="<?php echo (int) $curriculum_id; ?>"/>
+							<select id="level" name="level" required>
+								<option value=""><?php esc_html_e( '— Pick a level —', 'minhaj-core' ); ?></option>
+								<?php foreach ( $levels as $lvl ) : ?>
+									<option value="<?php echo esc_attr( (string) $lvl['code'] ); ?>">
+										<?php
+										$name = trim( (string) ( $lvl['name'] ?? '' ) );
+										echo esc_html( '' === $name ? (string) $lvl['code'] : (string) $lvl['code'] . ' — ' . $name );
+										?>
+									</option>
+								<?php endforeach; ?>
+							</select>
+							<p class="description">
+								<?php esc_html_e( 'From the curriculum\'s level catalogue (minhaj_curriculum_levels). Entry and exit criteria live on the level row and stay empty until the pedagogical team fills them.', 'minhaj-core' ); ?>
+							</p>
+						</td>
 					</tr>
 					<tr>
 						<th><label for="teaching_language"><?php esc_html_e( 'Teaching language', 'minhaj-core' ); ?></label></th>
 						<td>
 							<select id="teaching_language" name="teaching_language" required>
 								<option value=""><?php esc_html_e( '— Pick a launch language —', 'minhaj-core' ); ?></option>
-								<?php foreach ( $languages as $locale => $label ) : ?>
-									<?php
-									$count = $coverage[ $locale ] ?? null;
-									if ( null === $count ) {
-										$suffix = '';
-									} elseif ( $count > 0 ) {
-										$suffix = ' · '
-											. sprintf(
-												/* translators: %d: number of assignable teachers */
-												_n( '%d teacher', '%d teachers', $count, 'minhaj-core' ),
-												$count
-											);
-									} else {
-										$suffix = ' · ' . __( 'no assignable teacher', 'minhaj-core' );
-									}
-									?>
-									<option value="<?php echo esc_attr( $locale ); ?>" data-coverage="<?php echo esc_attr( (string) ( $count ?? 'unknown' ) ); ?>">
-										<?php echo esc_html( strtoupper( $locale ) . ' — ' . $label . $suffix ); ?>
-									</option>
-								<?php endforeach; ?>
+								<?php if ( array() !== $teaching ) : ?>
+									<optgroup label="<?php esc_attr_e( 'Assignable — coverage ≥ 1', 'minhaj-core' ); ?>">
+										<?php foreach ( $teaching as $locale => $info ) : ?>
+											<option value="<?php echo esc_attr( $locale ); ?>" data-coverage="<?php echo (int) $info['coverage']; ?>">
+												<?php
+												echo esc_html(
+													sprintf(
+														/* translators: 1: locale code, 2: label, 3: teacher count */
+														_n( '%1$s — %2$s · %3$d teacher', '%1$s — %2$s · %3$d teachers', (int) $info['coverage'], 'minhaj-core' ),
+														strtoupper( $locale ),
+														(string) $info['label'],
+														(int) $info['coverage']
+													)
+												);
+												?>
+											</option>
+										<?php endforeach; ?>
+									</optgroup>
+								<?php endif; ?>
+								<?php if ( array() !== $fallback ) : ?>
+									<optgroup label="<?php esc_attr_e( 'Requires override reason — no assignable teacher yet', 'minhaj-core' ); ?>">
+										<?php foreach ( $fallback as $locale => $label ) : ?>
+											<option value="<?php echo esc_attr( $locale ); ?>" data-coverage="0">
+												<?php echo esc_html( strtoupper( $locale ) . ' — ' . $label ); ?>
+											</option>
+										<?php endforeach; ?>
+									</optgroup>
+								<?php endif; ?>
 							</select>
 							<p class="description">
-								<?php esc_html_e( 'Only ISO codes from قرار 3 (LaunchLanguages). Locales with zero assignable teachers require a written override reason below.', 'minhaj-core' ); ?>
+								<?php esc_html_e( 'Registry is one — قرار 3 (LaunchLanguages). Two flags gate its use: teaching_available (coverage ≥ 1) drives this dropdown; ui_available drives the parent portal\'s ui_locale.', 'minhaj-core' ); ?>
 							</p>
 						</td>
 					</tr>

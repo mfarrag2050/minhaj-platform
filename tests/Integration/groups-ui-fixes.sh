@@ -10,6 +10,8 @@
 #          has no make-up row (post-commit listener drop scenario)
 #   AC-6 · sequence NEVER reuses a released slot — create 3, delete
 #          the third, create a fourth: fourth must be -04 not -03
+#   AC-7 · level not in the curriculum is refused (invalid_level)
+#   AC-8 · passing `code` to the service is refused (code_arg_not_allowed)
 
 set -euo pipefail
 
@@ -365,6 +367,92 @@ if [[ "$FOURTH" == "NL-B2701-B2-04" ]]; then
   echo "  ${GREEN}✓ deleted seq NOT reused — fourth group got $FOURTH${RESET}"
 else
   echo "  ${RED}✗ FOURTH=$FOURTH (expected NL-B2701-B2-04)${RESET}"; FAIL=1
+fi
+
+echo
+echo "${BOLD}== AC-7 · level not in the curriculum is refused ==${RESET}"
+
+LEVEL_CODE=$(cat <<PHP
+add_filter( 'minhaj_group_teaching_language_coverage', fn() => 1 );
+\$svc = new \\Minhaj\\Modules\\Groups\\GroupService( new \\Minhaj\\Modules\\Groups\\Repository\\GroupRepository() );
+
+\$bad = \$svc->create( 1, [
+    'type'              => 'group',
+    'batch_id'          => $BATCH2_ID,
+    'level'             => 'ZZ',        // Not in curriculum 1 (A1..C2)
+    'teaching_language' => 'nl',
+] );
+printf( "BAD=%s\n", is_wp_error( \$bad ) ? ( 'err:' . \$bad->get_error_code() ) : 'ok' );
+
+\$good = \$svc->create( 1, [
+    'type'              => 'group',
+    'batch_id'          => $BATCH2_ID,
+    'level'             => 'B1',        // Actual curriculum level
+    'teaching_language' => 'nl',
+] );
+printf( "GOOD=%s\n", is_wp_error( \$good ) ? ( 'err:' . \$good->get_error_code() ) : 'ok' );
+PHP
+)
+
+LEVEL_OUT=$(run_wp eval "$LEVEL_CODE" | tr -d '\r')
+echo "  $LEVEL_OUT"
+
+BAD_LEVEL=$(printf '%s' "$LEVEL_OUT" | grep -oE 'BAD=[a-z:_0-9]+' | cut -d= -f2)
+GOOD_LEVEL=$(printf '%s' "$LEVEL_OUT" | grep -oE 'GOOD=[a-z:_0-9]+' | cut -d= -f2)
+
+if [[ "$BAD_LEVEL" == "err:invalid_level" ]]; then
+  echo "  ${GREEN}✓ level 'ZZ' refused with err:invalid_level${RESET}"
+else
+  echo "  ${RED}✗ BAD=$BAD_LEVEL (expected err:invalid_level)${RESET}"; FAIL=1
+fi
+if [[ "$GOOD_LEVEL" == "ok" ]]; then
+  echo "  ${GREEN}✓ level 'B1' accepted (in curriculum)${RESET}"
+else
+  echo "  ${RED}✗ GOOD=$GOOD_LEVEL (expected ok)${RESET}"; FAIL=1
+fi
+
+echo
+echo "${BOLD}== AC-8 · passing 'code' to the service is refused ==${RESET}"
+
+CODE_CODE=$(cat <<PHP
+add_filter( 'minhaj_group_teaching_language_coverage', fn() => 1 );
+\$svc = new \\Minhaj\\Modules\\Groups\\GroupService( new \\Minhaj\\Modules\\Groups\\Repository\\GroupRepository() );
+
+\$out = \$svc->create( 1, [
+    'type'              => 'group',
+    'batch_id'          => $BATCH2_ID,
+    'level'             => 'B1',
+    'teaching_language' => 'nl',
+    'code'              => 'WHATEVER',
+] );
+printf( "CODE_ARG=%s\n", is_wp_error( \$out ) ? ( 'err:' . \$out->get_error_code() ) : 'ok' );
+
+\$out2 = \$svc->create( 1, [
+    'type'                 => 'group',
+    'batch_id'             => $BATCH2_ID,
+    'level'                => 'B1',
+    'teaching_language'    => 'nl',
+    'code_override_reason' => 'Because I said so',
+] );
+printf( "REASON_ARG=%s\n", is_wp_error( \$out2 ) ? ( 'err:' . \$out2->get_error_code() ) : 'ok' );
+PHP
+)
+
+CODE_OUT=$(run_wp eval "$CODE_CODE" | tr -d '\r')
+echo "  $CODE_OUT"
+
+CODE_ARG=$(printf '%s' "$CODE_OUT" | grep -oE 'CODE_ARG=[a-z:_0-9]+' | cut -d= -f2)
+REASON_ARG=$(printf '%s' "$CODE_OUT" | grep -oE 'REASON_ARG=[a-z:_0-9]+' | cut -d= -f2)
+
+if [[ "$CODE_ARG" == "err:code_arg_not_allowed" ]]; then
+  echo "  ${GREEN}✓ passing 'code' refused with err:code_arg_not_allowed${RESET}"
+else
+  echo "  ${RED}✗ CODE_ARG=$CODE_ARG (expected err:code_arg_not_allowed)${RESET}"; FAIL=1
+fi
+if [[ "$REASON_ARG" == "err:code_arg_not_allowed" ]]; then
+  echo "  ${GREEN}✓ passing 'code_override_reason' also refused${RESET}"
+else
+  echo "  ${RED}✗ REASON_ARG=$REASON_ARG (expected err:code_arg_not_allowed)${RESET}"; FAIL=1
 fi
 
 echo
