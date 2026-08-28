@@ -31,8 +31,9 @@
 |---|---|---|
 | `id` | BIGINT UNSIGNED PK AI | |
 | `session_id` | BIGINT UNSIGNED NOT NULL | KEY |
-| `student_id` | BIGINT UNSIGNED NOT NULL | KEY |
+| `student_id` | BIGINT UNSIGNED NOT NULL | KEY — **يشير إلى `minhaj_students.id`** بعد قرار 18، لا إلى `wp_users.ID` كما كان في المسوّدة |
 | `group_id` | BIGINT UNSIGNED NOT NULL | KEY — منسوخ للاستعلام، لا للاشتقاق |
+| `org_id` | BIGINT UNSIGNED NULL | KEY — **جديد**: منسوخ من الجلسة عند الإنشاء، ويقرأه `AccessPolicy` لتحديد نطاق مسؤول الجهة (`spec-organizations-v1` + R-13) |
 | `status` | VARCHAR(20) NOT NULL DEFAULT 'absent' | `present` / `late` / `absent` — KEY |
 | `auto_status` | VARCHAR(20) NOT NULL DEFAULT 'absent' | ما استنتجه النظام قبل أيّ تعديل بشريّ |
 | `source` | VARCHAR(20) NOT NULL DEFAULT 'zoom' | `zoom` / `manual` / `system` |
@@ -62,11 +63,13 @@
 
 ### 3.4 `minhaj_attendance_audit`
 
-نمط جداول التدقيق القائمة: `id` · `session_id` NULL (KEY) · `student_id` NULL (KEY) · `actor_user_id` (KEY) · `action` VARCHAR(64) · `payload_json` LONGTEXT NULL · `created_at` (KEY).
+نمط جداول التدقيق القائمة: `id` · `session_id` NULL (KEY) · `student_id` NULL (KEY — **`minhaj_students.id`** كسائر مراجع المستودع بعد قرار 18) · `actor_user_id` (KEY — مستخدم ووردبريس، وليّ الأمر أو المعلّم أو الإدارة، وليس الطفل) · `action` VARCHAR(64) · `payload_json` LONGTEXT NULL · `created_at` (KEY).
 
 ## 4 · الاشتقاق الآليّ
 
-مدخلات: `meeting.participant_joined` / `participant_left` من `minhaj_zoom_events`، مربوطة بالطالب عبر `zoom_registrant_id` → `minhaj_session_participants.subject_student_id`.
+مدخلات: `meeting.participant_joined` / `meeting.participant_left` / `meeting.ended` من `minhaj_zoom_events` — تصل الجدول اليوم و**تُوسَم `ignored` من `MeetingsService::process_pending_events`** لأنّ الوحدة لم تكن مكتوبة. هذه المواصفة **توصِلها** عبر الفلتر الوسيط `minhaj_zoom_event_handled`: مشترك من `AttendanceService` يُعيد `true` لأنواع أحداث المشاركين، فيتحوّل الحدث من `ignored` إلى `processed`.
+
+الربط بالطالب **عبر `zoom_registrant_id` وحده** → `minhaj_session_participants.subject_student_id` (يشير إلى `minhaj_students.id` — قرار 18). **لا يُطابَق اسمُ المشارك في Zoom نصّاً أبداً**: الأسماء تتكرّر وتُنتحَل، والاسم الذي أرسلناه إلى Zoom يعرضه Zoom، فلا معنى لمطابقةٍ عليه لا زيادة ولا تحقّقاً (R-1).
 
 عند `meeting.ended`، تُغلق الفترات المفتوحة على وقت الانتهاء، ثم لكل طالب:
 
@@ -100,7 +103,9 @@
 - **R-10 — الحضور يُكتب مرّة ويُعدّل، لا يُعاد بناؤه.** إعادة معالجة أحداث الجلسة نفسها تُحدّث الصفّ القائم (`uq_session_student`) ولا تُدرج ثانياً، ولا تدهس تعديلاً بشريّاً: صفّ بـ`amended_at IS NOT NULL` يُحدَّث فيه `auto_status` فقط.
 - **R-11 — الأحداث بعد COMMIT**، و`actor_user_id` صريح في كل كتابة (`0` للنظام مع `source='system'`).
 - **R-12 — الحضور يُجمع عبر انعقادات الجلسة الواحدة** *(قرار Muhammed، 28 أغسطس 2026)*. إن عاد الاجتماع خلال `minhaj_session_rejoin_grace_minutes` (افتراض **10 دقائق، ديناميكيّ تضبطه الإدارة** — `spec-zoom-sessions-v1 §5 M-20`)، فالفترات من الانعقادين **تُجمع في صفّ حضور واحد**، ولا يُستدعى `finalize_session` إلا بعد الانتهاء الأخير. الطالب الذي بقي 25 دقيقة قبل الانقطاع و30 بعده **حاضر بـ55 دقيقة**، لا غائب مرّتين. والدقائق بين الانعقادين **لا تُحتسب غياباً على الطالب** — العطل عندنا لا عنده.
-- **R-13 — بُعد الجهة.** `group_id` منسوخ على صفّ الحضور، و`org_id` يُقرأ عبره لتقارير الجهة (`spec-organizations-v1`). مسؤول الجهة يرى مجاميع حضور مجموعاتها، **لا** صفوف طلاب جهة أخرى.
+- **R-13 — بُعد الجهة.** `group_id` **و`org_id`** منسوخان على صفّ الحضور عند الإنشاء (لا مشتقّان بجوين لاحقاً). مسؤول الجهة يرى مجاميع حضور مجموعاتها، **لا** صفوف طلاب جهة أخرى — الفحص يُمرَّر عبر `AccessPolicy::org_ids_for( $user_id )` تماماً كما `visible_group_ids_for` (`spec-access-v1 §5 A-9`).
+
+- **R-14 — الاختبارات تعيد تشغيل حمولات webhook واقعيّة الشكل**، لا كائنات مبسَّطة تصنعها الاختبارات نفسها. الحمولة تحمل بنية `payload.object.participant.{user_id, participant_uuid, id, user_name, join_time, leave_time}` كما تنشرها Zoom في وثائقها. لكن — كما في وحدة `Meetings` — **التحقّق من الشكل الحقيقيّ في الإنتاج مؤجَّل حتى «أوّل تماسّ»** مع Zoom الفعليّ؛ الاختبار الحاليّ يستعمل ما يُبينه المرجع، ولا يمكن أن يُثبت أنّ الحمولة الحيّة لا تختلف في مفتاح صغير حتى نراها.
 
 ## 6 · الواجهة العامّة
 

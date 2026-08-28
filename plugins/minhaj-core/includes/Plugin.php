@@ -10,6 +10,7 @@ declare( strict_types=1 );
 namespace Minhaj;
 
 use Minhaj\Migrations\Migrator;
+use Minhaj\Modules\Attendance\Module as AttendanceModule;
 use Minhaj\Modules\Calendar\Module as CalendarModule;
 use Minhaj\Modules\Groups\Module as GroupsModule;
 use Minhaj\Modules\Meetings\Module as MeetingsModule;
@@ -69,6 +70,7 @@ final class Plugin {
 		OrgsModule::register();
 		CalendarModule::register();
 		MeetingsModule::register();
+		AttendanceModule::register();
 	}
 
 	private function __construct() {}

@@ -459,23 +459,44 @@ final class MeetingsService {
 		$payload    = (array) json_decode( (string) $row['payload_json'], true );
 
 		try {
+			$handled_internally = false;
 			switch ( $event_type ) {
 				case 'meeting.started':
 					$this->handle_meeting_started( $payload );
+					$handled_internally = true;
 					break;
 				case 'meeting.ended':
 					$this->handle_meeting_ended( $payload );
+					$handled_internally = true;
 					break;
-				default:
-					// Unknown event → mark ignored so it does not retry forever.
-					$this->repo->update_event(
-						$event_id,
-						array(
-							'status'       => EventStatus::IGNORED,
-							'processed_at' => $now,
-						)
-					);
-					return;
+			}
+
+			/**
+			 * Filter · give downstream subscribers (Attendance) a chance
+			 * to claim participant.* / meeting.* events. A subscriber
+			 * returns `true` when it processed the event; if no one
+			 * claims an unknown type, the row is marked `ignored`.
+			 *
+			 * @param bool                 $handled
+			 * @param string               $event_type
+			 * @param array<string, mixed> $payload
+			 */
+			$externally_handled = (bool) apply_filters(
+				'minhaj_zoom_event_handled',
+				false,
+				$event_type,
+				$payload
+			);
+
+			if ( ! $handled_internally && ! $externally_handled ) {
+				$this->repo->update_event(
+					$event_id,
+					array(
+						'status'       => EventStatus::IGNORED,
+						'processed_at' => $now,
+					)
+				);
+				return;
 			}
 
 			$this->repo->update_event(
