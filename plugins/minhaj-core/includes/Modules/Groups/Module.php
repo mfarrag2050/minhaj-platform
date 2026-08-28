@@ -14,6 +14,7 @@ use Minhaj\Modules\Groups\Admin\AjaxSearchController;
 use Minhaj\Modules\Groups\Admin\Assets;
 use Minhaj\Modules\Groups\Migrations\AddDerivedFieldsToGroups;
 use Minhaj\Modules\Groups\Migrations\CreateGroupsTables;
+use Minhaj\Modules\Groups\Migrations\DefaultSessionDurationTo60;
 use Minhaj\Modules\Groups\Repository\GroupRepository;
 
 defined( 'ABSPATH' ) || exit;
@@ -47,6 +48,7 @@ final class Module {
 	public static function contribute_migrations( array $migrations ): array {
 		$migrations[] = new CreateGroupsTables();
 		$migrations[] = new AddDerivedFieldsToGroups();
+		$migrations[] = new DefaultSessionDurationTo60();
 
 		return $migrations;
 	}

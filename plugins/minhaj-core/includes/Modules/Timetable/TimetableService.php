@@ -254,6 +254,17 @@ final class TimetableService {
 			);
 		}
 
+		// Zero-length sessions cannot be materialised (the ancient default of 0
+		// on the groups table shipped rows that would silently generate empty
+		// windows). Reject rather than translate — the admin must set a real
+		// duration before generation.
+		if ( (int) ( $group['session_duration_minutes'] ?? 0 ) <= 0 ) {
+			return new WP_Error(
+				'invalid_group_duration',
+				__( 'Group session_duration_minutes must be > 0 before generation.', 'minhaj-core' )
+			);
+		}
+
 		try {
 			$sessions = SessionTimeCalculator::generate( $pattern_args );
 		} catch ( Throwable $e ) {

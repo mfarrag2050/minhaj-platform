@@ -68,10 +68,13 @@ final class CreateGroupsTables extends Migration {
 			level VARCHAR(32) NOT NULL DEFAULT '',
 			teacher_id BIGINT UNSIGNED NULL DEFAULT NULL,
 			teaching_language CHAR(5) NOT NULL DEFAULT '',
+			-- منطقة عرض المجموعة لوليّ الأمر: IANA zone the parent portal
+			-- renders session times in. Not used by generation — the anchor
+			-- lives on minhaj_sessions.anchor_timezone, frozen per session.
 			timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
 			capacity_min TINYINT UNSIGNED NOT NULL,
 			capacity_max TINYINT UNSIGNED NOT NULL,
-			session_duration_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+			session_duration_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 60,
 			total_sessions SMALLINT UNSIGNED NOT NULL DEFAULT 0,
 			sessions_per_week TINYINT UNSIGNED NOT NULL DEFAULT 3,
 			program_hours SMALLINT UNSIGNED NOT NULL DEFAULT 36,

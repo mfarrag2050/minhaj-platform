@@ -156,6 +156,7 @@ final class TimetableServiceTest extends TestCase {
 				'id'             => 1,
 				'teacher_id'     => 50,
 				'total_sessions' => 36,
+				'session_duration_minutes' => 60,
 			)
 		);
 		$repo->method( 'list_availability_for_teacher_between' )->willReturn(
@@ -209,6 +210,7 @@ final class TimetableServiceTest extends TestCase {
 				'id'             => 1,
 				'teacher_id'     => 50,
 				'total_sessions' => 6,
+				'session_duration_minutes' => 60,
 			)
 		);
 		$repo->method( 'list_availability_for_teacher_between' )->willReturn(
@@ -267,6 +269,7 @@ final class TimetableServiceTest extends TestCase {
 				'id'             => 1,
 				'teacher_id'     => 50,
 				'total_sessions' => 3,
+				'session_duration_minutes' => 60,
 			)
 		);
 		$repo->method( 'list_availability_for_teacher_between' )->willReturn(
@@ -319,6 +322,7 @@ final class TimetableServiceTest extends TestCase {
 				'id'             => 1,
 				'teacher_id'     => 50,
 				'total_sessions' => 3,
+				'session_duration_minutes' => 60,
 			)
 		);
 		// Only Mondays covered — pattern targets Sunday.
@@ -355,6 +359,7 @@ final class TimetableServiceTest extends TestCase {
 				'id'             => 1,
 				'teacher_id'     => 0,
 				'total_sessions' => 36,
+				'session_duration_minutes' => 60,
 			)
 		);
 
@@ -384,6 +389,7 @@ final class TimetableServiceTest extends TestCase {
 				'id'             => 1,
 				'teacher_id'     => 50,
 				'total_sessions' => 36,
+				'session_duration_minutes' => 60,
 			)
 		);
 
