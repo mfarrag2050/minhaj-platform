@@ -6,11 +6,13 @@
 # live MariaDB — not by mocking AccessRepository, but by:
 #   1. Creating two orgs A and B, each with a group + a member + a
 #      teacher-linked profile + a student profile.
-#   2. Creating a WP user with role=minhaj_org_admin and an active
-#      minhaj_org_members row for org A only.
+#   2. Creating TWO org-admin WP users, one per org, each with an active
+#      minhaj_org_members row for their own org only.
 #   3. Calling AccessPolicy::visible_group_ids_for /
-#      visible_student_ids_for / can_view_group with that user's id and
-#      asserting zero rows for every org-B row.
+#      visible_student_ids_for / can_view_group from BOTH admins and
+#      asserting each sees only their own rows. A one-way test would
+#      miss an asymmetric leak — e.g. a query that scopes by teacher_id
+#      but leaks in the student direction.
 #
 # §8-11: attempting to insert a second active minhaj_org_members row for
 # the same (org_id, user_id) MUST be rejected by the database — not by PHP.
@@ -99,12 +101,16 @@ $groups_svc->assign_teacher( 1, $group_b, $teacher_b, 'test-seed' );
 $groups_svc->add_member( 1, $group_a, $student_a );
 $groups_svc->add_member( 1, $group_b, $student_b );
 
-// The org-A admin: WP user with our new role + an active membership in org A.
+// Two org admins: WP users with our new role, each an active member of
+// their own org only. Testing symmetrically catches asymmetric leaks
+// (queries that filter one direction but not the other).
 $admin_a_id = wp_insert_user( [ 'user_login' => 'org_a_admin_' . uniqid(), 'user_pass' => wp_generate_password(), 'role' => 'minhaj_org_admin' ] );
+$admin_b_id = wp_insert_user( [ 'user_login' => 'org_b_admin_' . uniqid(), 'user_pass' => wp_generate_password(), 'role' => 'minhaj_org_admin' ] );
 $svc->add_member( 1, $org_a, $admin_a_id, 'org_admin' );
+$svc->add_member( 1, $org_b, $admin_b_id, 'org_admin' );
 
-printf( "ORG_A=%d ORG_B=%d GROUP_A=%d GROUP_B=%d STUDENT_A=%d STUDENT_B=%d TEACHER_A=%d TEACHER_B=%d ADMIN_A=%d\n",
-    $org_a, $org_b, $group_a, $group_b, $student_a, $student_b, $teacher_a, $teacher_b, $admin_a_id );
+printf( "ORG_A=%d ORG_B=%d GROUP_A=%d GROUP_B=%d STUDENT_A=%d STUDENT_B=%d TEACHER_A=%d TEACHER_B=%d ADMIN_A=%d ADMIN_B=%d\n",
+    $org_a, $org_b, $group_a, $group_b, $student_a, $student_b, $teacher_a, $teacher_b, $admin_a_id, $admin_b_id );
 PHP
 )
 
@@ -120,88 +126,127 @@ GROUP_B=$(parse_id GROUP_B)
 STUDENT_A=$(parse_id STUDENT_A)
 STUDENT_B=$(parse_id STUDENT_B)
 ADMIN_A=$(parse_id ADMIN_A)
+ADMIN_B=$(parse_id ADMIN_B)
 
-for var in ORG_A ORG_B GROUP_A GROUP_B STUDENT_A STUDENT_B ADMIN_A; do
+for var in ORG_A ORG_B GROUP_A GROUP_B STUDENT_A STUDENT_B ADMIN_A ADMIN_B; do
   if [[ -z "${!var:-}" ]]; then
     echo "${RED}✗ could not parse $var from seed output${RESET}"
     exit 1
   fi
 done
 
-echo
-echo "${BOLD}== §8-5 · org-A admin (user=$ADMIN_A) queries the AccessPolicy ==${RESET}"
+# probe_admin prints one line for a given (admin, own_group, own_student, other_group, other_student)
+# summarising every AccessPolicy answer the assertion block needs.
+probe_admin() {
+  local label=$1 admin=$2 own_group=$3 own_student=$4 other_group=$5 other_student=$6
 
-ISOLATION_CODE=$(cat <<PHP
+  local code
+  code=$(cat <<PHP
 \$repo   = new \\Minhaj\\Access\\AccessRepository();
 \$policy = new \\Minhaj\\Access\\AccessPolicy( \$repo );
 
-\$visible_groups   = \$policy->visible_group_ids_for( $ADMIN_A );
-\$visible_students = \$policy->visible_student_ids_for( $ADMIN_A );
-\$scope            = \$policy->org_ids_for( $ADMIN_A );
+\$visible_groups   = \$policy->visible_group_ids_for( $admin );
+\$visible_students = \$policy->visible_student_ids_for( $admin );
+\$scope            = \$policy->org_ids_for( $admin );
 
-printf( "GROUPS=%s STUDENTS=%s SCOPE=%s IS_SCOPED=%s CAN_VIEW_B=%s CAN_VIEW_A=%s\n",
+printf(
+    "GROUPS=%s STUDENTS=%s SCOPE=%s IS_SCOPED=%s CAN_VIEW_OTHER_GROUP=%s CAN_VIEW_OWN_GROUP=%s CAN_VIEW_OTHER_STUDENT=%s CAN_VIEW_OWN_STUDENT=%s\n",
     implode( ',', \$visible_groups ),
     implode( ',', \$visible_students ),
     null === \$scope ? 'null' : ( '[' . implode( ',', \$scope ) . ']' ),
-    \$policy->is_org_scoped( $ADMIN_A ) ? 'true' : 'false',
-    \$policy->can_view_group( $ADMIN_A, $GROUP_B ) ? 'YES' : 'no',
-    \$policy->can_view_group( $ADMIN_A, $GROUP_A ) ? 'YES' : 'no'
+    \$policy->is_org_scoped( $admin ) ? 'true' : 'false',
+    \$policy->can_view_group( $admin, $other_group ) ? 'YES' : 'no',
+    \$policy->can_view_group( $admin, $own_group ) ? 'YES' : 'no',
+    \$policy->can_view_student( $admin, $other_student ) ? 'YES' : 'no',
+    \$policy->can_view_student( $admin, $own_student ) ? 'YES' : 'no'
 );
 PHP
 )
 
-ISOLATION_OUT=$(run_wp eval "$ISOLATION_CODE" | tr -d '\r')
-echo "  $ISOLATION_OUT"
+  run_wp eval "$code" | tr -d '\r'
+}
 
-VISIBLE_GROUPS=$(printf '%s' "$ISOLATION_OUT" | grep -oE 'GROUPS=[0-9,]*' | cut -d= -f2)
-VISIBLE_STUDENTS=$(printf '%s' "$ISOLATION_OUT" | grep -oE 'STUDENTS=[0-9,]*' | cut -d= -f2)
-SCOPE=$(printf '%s' "$ISOLATION_OUT" | grep -oE 'SCOPE=[^ ]+' | cut -d= -f2)
-IS_SCOPED=$(printf '%s' "$ISOLATION_OUT" | grep -oE 'IS_SCOPED=[a-z]+' | cut -d= -f2)
-CAN_VIEW_B=$(printf '%s' "$ISOLATION_OUT" | grep -oE 'CAN_VIEW_B=[A-Za-z]+' | cut -d= -f2)
-CAN_VIEW_A=$(printf '%s' "$ISOLATION_OUT" | grep -oE 'CAN_VIEW_A=[A-Za-z]+' | cut -d= -f2)
+FAIL=0
+
+# assert_isolation compares one admin's probe against the expected own vs other rows.
+assert_isolation() {
+  local label=$1 out=$2 expected_group=$3 expected_student=$4 expected_scope=$5
+
+  local vg vs sc is_sc cv_other cv_own cvs_other cvs_own
+  vg=$(printf '%s' "$out" | grep -oE 'GROUPS=[0-9,]*' | cut -d= -f2)
+  vs=$(printf '%s' "$out" | grep -oE 'STUDENTS=[0-9,]*' | cut -d= -f2)
+  sc=$(printf '%s' "$out" | grep -oE 'SCOPE=[^ ]+' | cut -d= -f2)
+  is_sc=$(printf '%s' "$out" | grep -oE 'IS_SCOPED=[a-z]+' | cut -d= -f2)
+  cv_other=$(printf '%s' "$out" | grep -oE 'CAN_VIEW_OTHER_GROUP=[A-Za-z]+' | cut -d= -f2)
+  cv_own=$(printf '%s' "$out" | grep -oE 'CAN_VIEW_OWN_GROUP=[A-Za-z]+' | cut -d= -f2)
+  cvs_other=$(printf '%s' "$out" | grep -oE 'CAN_VIEW_OTHER_STUDENT=[A-Za-z]+' | cut -d= -f2)
+  cvs_own=$(printf '%s' "$out" | grep -oE 'CAN_VIEW_OWN_STUDENT=[A-Za-z]+' | cut -d= -f2)
+
+  if [[ "$vg" == "$expected_group" ]]; then
+    echo "  ${GREEN}✓ [$label] visible_group_ids_for = [$expected_group] — other org not present${RESET}"
+  else
+    echo "  ${RED}✗ [$label] visible_group_ids_for=[$vg] — expected [$expected_group]${RESET}"
+    FAIL=1
+  fi
+
+  if [[ "$vs" == "$expected_student" ]]; then
+    echo "  ${GREEN}✓ [$label] visible_student_ids_for = [$expected_student] — other org student not leaked${RESET}"
+  else
+    echo "  ${RED}✗ [$label] visible_student_ids_for=[$vs] — expected [$expected_student]${RESET}"
+    FAIL=1
+  fi
+
+  if [[ "$sc" == "[$expected_scope]" ]] && [[ "$is_sc" == "true" ]]; then
+    echo "  ${GREEN}✓ [$label] org_ids_for = [$expected_scope], is_org_scoped = true${RESET}"
+  else
+    echo "  ${RED}✗ [$label] scope=$sc is_scoped=$is_sc — expected [$expected_scope] and true${RESET}"
+    FAIL=1
+  fi
+
+  if [[ "$cv_other" == "no" ]]; then
+    echo "  ${GREEN}✓ [$label] can_view_group(other) = false${RESET}"
+  else
+    echo "  ${RED}✗ [$label] can_view_group(other) returned $cv_other — CROSS-ORG LEAK${RESET}"
+    FAIL=1
+  fi
+
+  if [[ "$cv_own" == "YES" ]]; then
+    echo "  ${GREEN}✓ [$label] can_view_group(own) = true${RESET}"
+  else
+    echo "  ${RED}✗ [$label] can_view_group(own) returned $cv_own — own org should be visible${RESET}"
+    FAIL=1
+  fi
+
+  if [[ "$cvs_other" == "no" ]]; then
+    echo "  ${GREEN}✓ [$label] can_view_student(other) = false${RESET}"
+  else
+    echo "  ${RED}✗ [$label] can_view_student(other) returned $cvs_other — student CROSS-ORG LEAK${RESET}"
+    FAIL=1
+  fi
+
+  if [[ "$cvs_own" == "YES" ]]; then
+    echo "  ${GREEN}✓ [$label] can_view_student(own) = true${RESET}"
+  else
+    echo "  ${RED}✗ [$label] can_view_student(own) returned $cvs_own — own org student should be visible${RESET}"
+    FAIL=1
+  fi
+}
+
+echo
+echo "${BOLD}== §8-5 · direction A→B: org-A admin (user=$ADMIN_A) queries the AccessPolicy ==${RESET}"
+PROBE_A=$(probe_admin "A→B" "$ADMIN_A" "$GROUP_A" "$STUDENT_A" "$GROUP_B" "$STUDENT_B")
+echo "  $PROBE_A"
+
+echo
+echo "${BOLD}== §8-5 · direction B→A: org-B admin (user=$ADMIN_B) queries the AccessPolicy ==${RESET}"
+PROBE_B=$(probe_admin "B→A" "$ADMIN_B" "$GROUP_B" "$STUDENT_B" "$GROUP_A" "$STUDENT_A")
+echo "  $PROBE_B"
 
 echo
 echo "${BOLD}== Assertions ==${RESET}"
-FAIL=0
 
-# visible_group_ids_for must contain group A only.
-if [[ "$VISIBLE_GROUPS" == "$GROUP_A" ]]; then
-  echo "  ${GREEN}✓ visible_group_ids_for = [$GROUP_A] — org B not present${RESET}"
-else
-  echo "  ${RED}✗ visible_group_ids_for=[$VISIBLE_GROUPS] — expected [$GROUP_A] only${RESET}"
-  FAIL=1
-fi
-
-# visible_student_ids_for must contain student A only.
-if [[ "$VISIBLE_STUDENTS" == "$STUDENT_A" ]]; then
-  echo "  ${GREEN}✓ visible_student_ids_for = [$STUDENT_A] — org B student not leaked${RESET}"
-else
-  echo "  ${RED}✗ visible_student_ids_for=[$VISIBLE_STUDENTS] — expected [$STUDENT_A] only${RESET}"
-  FAIL=1
-fi
-
-# Scope must be a real array, not null.
-if [[ "$SCOPE" == "[$ORG_A]" ]] && [[ "$IS_SCOPED" == "true" ]]; then
-  echo "  ${GREEN}✓ org_ids_for = [$ORG_A], is_org_scoped = true${RESET}"
-else
-  echo "  ${RED}✗ scope=$SCOPE is_scoped=$IS_SCOPED — expected [$ORG_A] and true${RESET}"
-  FAIL=1
-fi
-
-# can_view_group must refuse group B.
-if [[ "$CAN_VIEW_B" == "no" ]]; then
-  echo "  ${GREEN}✓ can_view_group(admin_A, group_B) = false${RESET}"
-else
-  echo "  ${RED}✗ can_view_group(admin_A, group_B) returned $CAN_VIEW_B — CROSS-ORG LEAK${RESET}"
-  FAIL=1
-fi
-
-if [[ "$CAN_VIEW_A" == "YES" ]]; then
-  echo "  ${GREEN}✓ can_view_group(admin_A, group_A) = true${RESET}"
-else
-  echo "  ${RED}✗ can_view_group(admin_A, group_A) returned $CAN_VIEW_A — own org should be visible${RESET}"
-  FAIL=1
-fi
+assert_isolation "A→B" "$PROBE_A" "$GROUP_A" "$STUDENT_A" "$ORG_A"
+assert_isolation "B→A" "$PROBE_B" "$GROUP_B" "$STUDENT_B" "$ORG_B"
 
 echo
 echo "${BOLD}== §8-11 · duplicate active membership in org A must be rejected by the DB ==${RESET}"
