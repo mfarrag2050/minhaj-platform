@@ -96,8 +96,14 @@ $wpdb->insert( 'wp_minhaj_teacher_profiles', [ 'user_id' => $teacher_b, 'display
 $wpdb->insert( 'wp_minhaj_student_profiles', [ 'user_id' => $student_a, 'first_name' => 'Sara', 'family_name_initial' => 'A', 'origin_org_id' => $org_a, 'created_at' => $now ] );
 $wpdb->insert( 'wp_minhaj_student_profiles', [ 'user_id' => $student_b, 'first_name' => 'Bilal', 'family_name_initial' => 'B', 'origin_org_id' => $org_b, 'created_at' => $now ] );
 
-$groups_svc->assign_teacher( 1, $group_a, $teacher_a, 'test-seed' );
-$groups_svc->assign_teacher( 1, $group_b, $teacher_b, 'test-seed' );
+// Bypass the S-4 assignability gate (spec-people-v1) via direct UPDATE:
+// these synthetic teachers have no safeguarding check on file. The gate
+// is proved separately by tests/Unit/Modules/People/AssignabilityGateTest;
+// this test is about org isolation and would double-book the test surface
+// if it also had to walk the People onboarding path.
+$wpdb->update( 'wp_minhaj_groups', [ 'teacher_id' => $teacher_a ], [ 'id' => $group_a ] );
+$wpdb->update( 'wp_minhaj_groups', [ 'teacher_id' => $teacher_b ], [ 'id' => $group_b ] );
+
 $groups_svc->add_member( 1, $group_a, $student_a );
 $groups_svc->add_member( 1, $group_b, $student_b );
 
@@ -127,8 +133,10 @@ STUDENT_A=$(parse_id STUDENT_A)
 STUDENT_B=$(parse_id STUDENT_B)
 ADMIN_A=$(parse_id ADMIN_A)
 ADMIN_B=$(parse_id ADMIN_B)
+TEACHER_A=$(parse_id TEACHER_A)
+TEACHER_B=$(parse_id TEACHER_B)
 
-for var in ORG_A ORG_B GROUP_A GROUP_B STUDENT_A STUDENT_B ADMIN_A ADMIN_B; do
+for var in ORG_A ORG_B GROUP_A GROUP_B STUDENT_A STUDENT_B ADMIN_A ADMIN_B TEACHER_A TEACHER_B; do
   if [[ -z "${!var:-}" ]]; then
     echo "${RED}✗ could not parse $var from seed output${RESET}"
     exit 1
@@ -247,6 +255,220 @@ echo "${BOLD}== Assertions ==${RESET}"
 
 assert_isolation "A→B" "$PROBE_A" "$GROUP_A" "$STUDENT_A" "$ORG_A"
 assert_isolation "B→A" "$PROBE_B" "$GROUP_B" "$STUDENT_B" "$ORG_B"
+
+echo
+echo "${BOLD}== §8-6 · org-A admin reads student profile — no guardian PII surfaces ==${RESET}"
+
+# Seed a guardian with a distinctive email + phone so a leak is impossible
+# to miss. If either string appears in what the admin can read, we fail.
+# Randomise per run — the wp_users.user_email unique key would otherwise
+# collide with prior runs, and the whole point is to prove *this* email
+# never surfaces, so re-using yesterday's would give a false pass anyway.
+GUARDIAN_EMAIL="pii-leak-check-$(date +%s)-$RANDOM@example.com"
+GUARDIAN_PHONE="+974-5555-$(date +%s)-$RANDOM"
+
+PII_SEED_CODE=$(cat <<PHP
+\$guardian_a = wp_insert_user( [
+    'user_login' => 'guardian_pii_' . uniqid(),
+    'user_email' => '$GUARDIAN_EMAIL',
+    'user_pass'  => wp_generate_password(),
+    'role'       => 'minhaj_parent',
+] );
+if ( is_wp_error( \$guardian_a ) ) { echo "insert_user_failed:" . \$guardian_a->get_error_code(); exit(1); }
+update_user_meta( \$guardian_a, 'billing_phone', '$GUARDIAN_PHONE' );
+
+global \$wpdb;
+\$now = current_time( 'mysql', true );
+\$wpdb->insert( 'wp_minhaj_guardianship', [
+    'guardian_id'  => \$guardian_a,
+    'student_id'   => $STUDENT_A,
+    'relationship' => 'parent',
+    'is_primary'   => 1,
+    'can_view'     => 1,
+    'can_manage'   => 1,
+    'started_at'   => \$now,
+    'created_at'   => \$now,
+] );
+printf( "GUARDIAN_A=%d\n", \$guardian_a );
+PHP
+)
+
+PII_SEED_OUT=$(run_wp eval "$PII_SEED_CODE" | tr -d '\r')
+echo "  $PII_SEED_OUT"
+GUARDIAN_A=$(printf '%s' "$PII_SEED_OUT" | grep -oE 'GUARDIAN_A=[0-9]+' | cut -d= -f2)
+
+if [[ -z "${GUARDIAN_A:-}" ]]; then
+  echo "  ${RED}✗ could not seed guardian for PII check${RESET}"
+  exit 1
+fi
+
+# Serialise every read an org-admin UI would plausibly perform against the
+# student, then grep for the seeded email / phone. The grep is intentionally
+# broader than the current schema — it catches leaks in new columns too.
+PII_PROBE_CODE=$(cat <<PHP
+\$access_repo   = new \\Minhaj\\Access\\AccessRepository();
+\$people_repo   = new \\Minhaj\\Modules\\People\\Repository\\PeopleRepository();
+
+\$views = [
+    'access.find_student_profile' => \$access_repo->find_student_profile( $STUDENT_A ),
+    'people.find_student_profile' => \$people_repo->find_student_profile( $STUDENT_A ),
+    // list_guardians_of_student is legitimate (org admin needs the count),
+    // but MUST NOT contain email / phone — those live on wp_users and
+    // wp_usermeta, not on the guardianship row.
+    'people.list_guardians'       => \$people_repo->list_guardians_of_student( $STUDENT_A ),
+];
+
+// Also emit can_view_student(admin_A, guardian_A). The guardian is a WP
+// user; the admin has no relationship to them, so this MUST be false.
+\$policy = new \\Minhaj\\Access\\AccessPolicy( \$access_repo );
+\$views['policy.can_view_student(guardian_A)'] = \$policy->can_view_student( $ADMIN_A, $GUARDIAN_A );
+
+echo json_encode( \$views, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE );
+PHP
+)
+
+PII_PROBE_OUT=$(run_wp eval "$PII_PROBE_CODE" | tr -d '\r')
+
+# Emit the payload so a future reviewer can see exactly what shipped.
+echo "  --- payload the org admin can read ---"
+printf '%s\n' "$PII_PROBE_OUT" | sed 's/^/  /'
+echo "  --------------------------------------"
+
+if grep -F -q "$GUARDIAN_EMAIL" <<<"$PII_PROBE_OUT"; then
+  echo "  ${RED}✗ guardian email surfaced in org-admin read of student — PII LEAK${RESET}"
+  FAIL=1
+else
+  echo "  ${GREEN}✓ guardian email absent from every org-admin student read${RESET}"
+fi
+
+if grep -F -q "$GUARDIAN_PHONE" <<<"$PII_PROBE_OUT"; then
+  echo "  ${RED}✗ guardian phone surfaced in org-admin read of student — PII LEAK${RESET}"
+  FAIL=1
+else
+  echo "  ${GREEN}✓ guardian phone absent from every org-admin student read${RESET}"
+fi
+
+# can_view_student against the guardian's own user id must be false — the
+# admin has no relationship to the guardian.
+if grep -q '"policy.can_view_student(guardian_A)": false' <<<"$PII_PROBE_OUT"; then
+  echo "  ${GREEN}✓ can_view_student(admin_A, guardian_A) = false${RESET}"
+else
+  echo "  ${RED}✗ can_view_student(admin_A, guardian_A) returned true — guardian identity exposed${RESET}"
+  FAIL=1
+fi
+
+echo
+echo "${BOLD}== §8-7 · suspending org A — running group intact, new registration blocked ==${RESET}"
+
+SUSPEND_CODE=$(cat <<PHP
+add_filter( 'minhaj_org_requires_dpa', '__return_false' );
+
+\$svc = new \\Minhaj\\Modules\\Orgs\\OrgService( new \\Minhaj\\Modules\\Orgs\\Repository\\OrgRepository() );
+
+// Baseline: an active token issued BEFORE suspension.
+\$link = \$svc->issue_registration_link( 1, $ORG_A, [ 'label' => 'pre-suspend' ] );
+if ( is_wp_error( \$link ) ) { echo "seed_link_failed:" . \$link->get_error_code(); exit(1); }
+\$token = \$link['token'];
+
+// Baseline: teacher availability + tiny pattern so we can prove generation
+// still works AFTER suspension. Total_sessions is pushed to 3 so the R-1
+// check inside generate_for_group matches.
+global \$wpdb;
+\$wpdb->update(
+    'wp_minhaj_groups',
+    [ 'total_sessions' => 3, 'session_duration_minutes' => 60 ],
+    [ 'id' => $GROUP_A ]
+);
+
+\$timetable = new \\Minhaj\\Modules\\Timetable\\TimetableService( new \\Minhaj\\Modules\\Timetable\\Repository\\TimetableRepository() );
+
+\$avail = \$timetable->set_availability( 1, $TEACHER_A, [ [
+    'weekday'        => 1,          // Monday
+    'start_local'    => '09:00',
+    'end_local'      => '12:00',
+    'timezone'       => 'Asia/Qatar',
+    'effective_from' => '2027-01-01',
+    'effective_to'   => null,
+] ] );
+if ( is_wp_error( \$avail ) ) { echo "avail_failed:" . \$avail->get_error_code(); exit(1); }
+
+// Suspend org A.
+\$suspend = \$svc->set_status( 1, $ORG_A, 'suspended', 'test-suspend' );
+printf( "SUSPEND=%s\n", is_wp_error( \$suspend ) ? ( 'err:' . \$suspend->get_error_code() ) : 'ok' );
+
+// Row-level status on group A must be untouched by the org suspension.
+\$row = \$wpdb->get_row( \$wpdb->prepare( 'SELECT status FROM wp_minhaj_groups WHERE id = %d', $GROUP_A ), ARRAY_A );
+printf( "GROUP_A_STATUS_AFTER=%s\n", (string) \$row['status'] );
+
+// Issuing a NEW link on the suspended org must fail.
+\$new_link = \$svc->issue_registration_link( 1, $ORG_A, [ 'label' => 'post-suspend' ] );
+printf( "NEW_LINK=%s\n", is_wp_error( \$new_link ) ? ( 'err:' . \$new_link->get_error_code() ) : 'ok' );
+
+// Resolving a token that was valid pre-suspension must now return null.
+\$resolved = \$svc->resolve_registration_token( \$token );
+printf( "TOKEN_RESOLVE=%s\n", null === \$resolved ? 'null' : 'accepted' );
+
+// Future sessions on the running group must still generate.
+\$gen = \$timetable->generate_for_group( 1, $GROUP_A, [
+    'anchor_timezone'  => 'Asia/Qatar',
+    'weekdays'         => [ 1 ],
+    'start_local'      => '09:30',
+    'duration_minutes' => 60,
+    'weeks_count'      => 3,
+    'first_week_start' => '2027-01-04',
+] );
+if ( is_wp_error( \$gen ) ) {
+    printf( "GENERATE=err:%s\n", \$gen->get_error_code() );
+} else {
+    printf( "GENERATE=ok count=%d\n", count( \$gen ) );
+}
+PHP
+)
+
+SUSPEND_OUT=$(run_wp eval "$SUSPEND_CODE" | tr -d '\r')
+echo "  $SUSPEND_OUT"
+
+SUSPEND_RESULT=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'SUSPEND=[a-z:_]+' | cut -d= -f2)
+GROUP_A_STATUS_AFTER=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'GROUP_A_STATUS_AFTER=[a-z]+' | cut -d= -f2)
+NEW_LINK_RESULT=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'NEW_LINK=[a-z:_]+' | cut -d= -f2)
+TOKEN_RESOLVE_RESULT=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'TOKEN_RESOLVE=[a-z]+' | cut -d= -f2)
+GENERATE_RESULT=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'GENERATE=[a-z:_]+' | cut -d= -f2)
+GENERATE_COUNT=$(printf '%s' "$SUSPEND_OUT" | grep -oE 'count=[0-9]+' | cut -d= -f2)
+
+if [[ "$SUSPEND_RESULT" == "ok" ]]; then
+  echo "  ${GREEN}✓ set_status(suspended) succeeded${RESET}"
+else
+  echo "  ${RED}✗ set_status(suspended) returned $SUSPEND_RESULT${RESET}"
+  FAIL=1
+fi
+
+if [[ "$GROUP_A_STATUS_AFTER" == "draft" ]] || [[ "$GROUP_A_STATUS_AFTER" == "active" ]] || [[ "$GROUP_A_STATUS_AFTER" == "scheduled" ]]; then
+  echo "  ${GREEN}✓ group A status untouched (=$GROUP_A_STATUS_AFTER) — no cascade from org.status${RESET}"
+else
+  echo "  ${RED}✗ group A status changed to $GROUP_A_STATUS_AFTER — suspension cascaded${RESET}"
+  FAIL=1
+fi
+
+if [[ "$NEW_LINK_RESULT" == "err:org_not_active" ]]; then
+  echo "  ${GREEN}✓ issuing a new link on a suspended org fails with org_not_active${RESET}"
+else
+  echo "  ${RED}✗ new link on suspended org returned $NEW_LINK_RESULT — expected err:org_not_active${RESET}"
+  FAIL=1
+fi
+
+if [[ "$TOKEN_RESOLVE_RESULT" == "null" ]]; then
+  echo "  ${GREEN}✓ a previously-issued token no longer resolves on a suspended org${RESET}"
+else
+  echo "  ${RED}✗ token still resolved after suspension — new registrations not blocked${RESET}"
+  FAIL=1
+fi
+
+if [[ "$GENERATE_RESULT" == "ok" ]] && [[ "$GENERATE_COUNT" == "3" ]]; then
+  echo "  ${GREEN}✓ generate_for_group on a suspended org still produces 3 sessions${RESET}"
+else
+  echo "  ${RED}✗ generate_for_group returned $GENERATE_RESULT count=$GENERATE_COUNT — expected ok/3${RESET}"
+  FAIL=1
+fi
 
 echo
 echo "${BOLD}== §8-11 · duplicate active membership in org A must be rejected by the DB ==${RESET}"

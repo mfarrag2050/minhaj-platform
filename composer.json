@@ -28,7 +28,12 @@
 	"scripts": {
 		"phpcs": "phpcs --standard=phpcs.xml.dist",
 		"phpcbf": "phpcbf --standard=phpcs.xml.dist",
-		"test": "phpunit"
+		"test": [
+			"@php-version-check",
+			"phpunit"
+		],
+		"test:82": "docker run --rm -v \"$(pwd):/app\" -w /app php:8.2-cli php vendor/bin/phpunit",
+		"php-version-check": "php -r 'if (PHP_VERSION_ID >= 80300) { fwrite(STDERR, \"refusing to run phpunit on PHP \" . PHP_VERSION . \" — the platform targets 8.2. Use `composer test:82` (runs in a php:8.2-cli container) or a native 8.2 interpreter.\\n\"); exit(1); }'"
 	},
 	"config": {
 		"allow-plugins": {

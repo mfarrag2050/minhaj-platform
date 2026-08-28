@@ -152,11 +152,14 @@ Org Service (Minhaj\Tests\Unit\Modules\Orgs\OrgService)
 OK (12 tests, 51 assertions)
 ```
 
-### 3.3 §8-5 (عزل الجهة إلى الجهة) و§8-11 (رفض القاعدة للعضويّة المكرَّرة) — اختبار تكامل حيّ
+### 3.3 §8-5 و§8-6 و§8-7 و§8-11 — اختبار تكامل حيّ
 
-هذان أخطر معيارين وهما **مبرهنان على MariaDB حيّة** بلا محاكاة، على نمط `tests/Integration/groups-concurrency.sh`.
+أربعة معايير مبرهنة على MariaDB حيّة داخل `wp-env`، على نمط `tests/Integration/groups-concurrency.sh`:
 
-**اختبار العزل ثنائيّ الاتجاه**: يبذر مسؤولين — `ADMIN_A` للجهة أ و`ADMIN_B` للجهة ب — ثم يستدعي كامل مجموعة القرارات (`visible_group_ids_for`، `visible_student_ids_for`، `org_ids_for`، `is_org_scoped`، `can_view_group`، `can_view_student`) من **كليهما** ضدّ صفوف الجهة الأخرى. الاختبار باتّجاه واحد لا يثبت العزل — التسريب غير المتناظر (استعلام يرشّح جهة الطالب دون جهة المعلّم مثلاً) لا يُكشَف إلا بمرآة.
+- **§8-5** · عزل ثنائيّ الاتجاه — `ADMIN_A` و`ADMIN_B` معاً، وكلٌّ يستعلم عن الجهة الأخرى. الاختبار باتّجاه واحد لا يثبت العزل؛ التسريب غير المتناظر لا يُكشَف إلا بمرآة.
+- **§8-6** · قراءة ملفّ الطالب من مسؤول الجهة — يتحقّق أنّ بريد وليّ الأمر وهاتفه غير موجودين في أيّ استجابة، وأنّ `can_view_student` على وليّ الأمر نفسه يعيد `false`.
+- **§8-7** · إيقاف الجهة أ — يتحقّق أنّ مجموعتها الجارية تبقى كما هي، وأنّ الجلسات المستقبليّة تُولَّد كالمعتاد، وأنّ التسجيل الجديد وحده هو الممنوع (رمز قديم لا يُحلّ، ولا يُصدَر رمز جديد).
+- **§8-11** · العضويّة المكرَّرة النشطة — الرفض من InnoDB باسم `uq_active_member`، ثم ترجمة الخطأ إلى `WP_Error(duplicate_active_member)`.
 
 الأمر:
 
@@ -169,41 +172,103 @@ bash tests/Integration/orgs-cross-scope.sh
 ```
 == Reset test tables ==
 == Seed: two orgs + one group + one student per org ==
-  ORG_A=7 ORG_B=8 GROUP_A=13 GROUP_B=14 STUDENT_A=233 STUDENT_B=234 TEACHER_A=231 TEACHER_B=232 ADMIN_A=235 ADMIN_B=236
+  ORG_A=23 ORG_B=24 GROUP_A=29 GROUP_B=30 STUDENT_A=284 STUDENT_B=285 TEACHER_A=282 TEACHER_B=283 ADMIN_A=286 ADMIN_B=287
 
-== §8-5 · direction A→B: org-A admin (user=235) queries the AccessPolicy ==
-  GROUPS=13 STUDENTS=233 SCOPE=[7] IS_SCOPED=true CAN_VIEW_OTHER_GROUP=no CAN_VIEW_OWN_GROUP=YES CAN_VIEW_OTHER_STUDENT=no CAN_VIEW_OWN_STUDENT=YES
+== §8-5 · direction A→B: org-A admin (user=286) queries the AccessPolicy ==
+  GROUPS=29 STUDENTS=284 SCOPE=[23] IS_SCOPED=true CAN_VIEW_OTHER_GROUP=no CAN_VIEW_OWN_GROUP=YES CAN_VIEW_OTHER_STUDENT=no CAN_VIEW_OWN_STUDENT=YES
 
-== §8-5 · direction B→A: org-B admin (user=236) queries the AccessPolicy ==
-  GROUPS=14 STUDENTS=234 SCOPE=[8] IS_SCOPED=true CAN_VIEW_OTHER_GROUP=no CAN_VIEW_OWN_GROUP=YES CAN_VIEW_OTHER_STUDENT=no CAN_VIEW_OWN_STUDENT=YES
+== §8-5 · direction B→A: org-B admin (user=287) queries the AccessPolicy ==
+  GROUPS=30 STUDENTS=285 SCOPE=[24] IS_SCOPED=true CAN_VIEW_OTHER_GROUP=no CAN_VIEW_OWN_GROUP=YES CAN_VIEW_OTHER_STUDENT=no CAN_VIEW_OWN_STUDENT=YES
 
 == Assertions ==
-  ✓ [A→B] visible_group_ids_for = [13] — other org not present
-  ✓ [A→B] visible_student_ids_for = [233] — other org student not leaked
-  ✓ [A→B] org_ids_for = [7], is_org_scoped = true
+  ✓ [A→B] visible_group_ids_for = [29] — other org not present
+  ✓ [A→B] visible_student_ids_for = [284] — other org student not leaked
+  ✓ [A→B] org_ids_for = [23], is_org_scoped = true
   ✓ [A→B] can_view_group(other) = false
   ✓ [A→B] can_view_group(own) = true
   ✓ [A→B] can_view_student(other) = false
   ✓ [A→B] can_view_student(own) = true
-  ✓ [B→A] visible_group_ids_for = [14] — other org not present
-  ✓ [B→A] visible_student_ids_for = [234] — other org student not leaked
-  ✓ [B→A] org_ids_for = [8], is_org_scoped = true
+  ✓ [B→A] visible_group_ids_for = [30] — other org not present
+  ✓ [B→A] visible_student_ids_for = [285] — other org student not leaked
+  ✓ [B→A] org_ids_for = [24], is_org_scoped = true
   ✓ [B→A] can_view_group(other) = false
   ✓ [B→A] can_view_group(own) = true
   ✓ [B→A] can_view_student(other) = false
   ✓ [B→A] can_view_student(own) = true
 
+== §8-6 · org-A admin reads student profile — no guardian PII surfaces ==
+  GUARDIAN_A=288
+  --- payload the org admin can read ---
+  {
+      "access.find_student_profile": {
+          "user_id": "284",
+          "origin_org_id": "23",
+          "anonymized_at": null
+      },
+      "people.find_student_profile": {
+          "user_id": "284",
+          "first_name": "Sara",
+          "family_name_initial": "A",
+          "birth_year": null,
+          "ui_locale": "",
+          "market": "",
+          "origin_org_id": "23",
+          "registration_link_id": null,
+          "current_level": "",
+          "notes_visible": null,
+          "created_at": "2026-08-28 07:39:46",
+          "anonymized_at": null
+      },
+      "people.list_guardians": [
+          {
+              "id": "8",
+              "guardian_id": "288",
+              "student_id": "284",
+              "relationship": "parent",
+              "is_primary": "1",
+              "can_view": "1",
+              "can_manage": "1",
+              "started_at": "2026-08-28 07:39:49",
+              "ended_at": null,
+              "active_primary_student_id": "284",
+              "created_at": "2026-08-28 07:39:49"
+          }
+      ],
+      "policy.can_view_student(guardian_A)": false
+  }
+  --------------------------------------
+  ✓ guardian email absent from every org-admin student read
+  ✓ guardian phone absent from every org-admin student read
+  ✓ can_view_student(admin_A, guardian_A) = false
+
+== §8-7 · suspending org A — running group intact, new registration blocked ==
+  SUSPEND=ok
+GROUP_A_STATUS_AFTER=draft
+NEW_LINK=err:org_not_active
+TOKEN_RESOLVE=null
+GENERATE=ok count=3
+  ✓ set_status(suspended) succeeded
+  ✓ group A status untouched (=draft) — no cascade from org.status
+  ✓ issuing a new link on a suspended org fails with org_not_active
+  ✓ a previously-issued token no longer resolves on a suspended org
+  ✓ generate_for_group on a suspended org still produces 3 sessions
+
 == §8-11 · duplicate active membership in org A must be rejected by the DB ==
-  INSERT=refused ERR=[Duplicate entry '7-235' for key 'uq_active_member']
+  INSERT=refused ERR=[Duplicate entry '23-286' for key 'uq_active_member']
 SERVICE=err:duplicate_active_member
   ✓ raw INSERT refused by the database
-  ✓ MySQL error names the uq_active_member key: Duplicate entry '7-235' for key 'uq_active_member'
+  ✓ MySQL error names the uq_active_member key: Duplicate entry '23-286' for key 'uq_active_member'
   ✓ OrgService translates the DB error into WP_Error(duplicate_active_member)
 
 ORGS CROSS-SCOPE PROOF PASSED
 ```
 
-قراءة السطر الحاسم لـ§8-11: `Duplicate entry '7-235' for key 'uq_active_member'` — الرفض قادم من InnoDB باسم المفتاح الفريد الصريح، لا من `if` في PHP. وللتماثل في §8-5: `CAN_VIEW_OTHER_GROUP=no` و`CAN_VIEW_OTHER_STUDENT=no` من الاتّجاهين — لا مجموعة، لا طالب، لا نطاق يظهر عبر الحدّ.
+قراءة الأسطر الحاسمة:
+
+- **§8-5**: `CAN_VIEW_OTHER_GROUP=no` و`CAN_VIEW_OTHER_STUDENT=no` من الاتّجاهين. لا مجموعة، لا طالب، لا نطاق يظهر عبر الحدّ.
+- **§8-6**: البريد `pii-leak-check-…@example.com` والهاتف `+974-5555-…` مبذوران بالفعل على `wp_users` و`wp_usermeta` (يتأكّد الاختبار من أنّ `wp_insert_user` رجع مُعرِّف مستخدم فعليّاً — كنّا سابقاً نمرّر بريداً بامتداد `.invalid` فيرجع `WP_Error` ويجتاز الاختبار بلا وليّ أمر فعلاً؛ صُحِّح). ومع ذلك لا شيء منهما يظهر في أيٍّ من الاستجابات الثلاث التي تلتقطها اللقطة.
+- **§8-7**: `GENERATE=ok count=3` — الجلسات تولَّد بعد الإيقاف. `TOKEN_RESOLVE=null` مع `NEW_LINK=err:org_not_active` — التسجيل الجديد وحده هو الممنوع.
+- **§8-11**: `Duplicate entry '23-286' for key 'uq_active_member'` — الرفض من محرّك InnoDB باسم المفتاح الفريد الصريح، لا من `if` في PHP.
 
 ### 3.4 مجموعة الاختبارات كاملة + phpcs
 
